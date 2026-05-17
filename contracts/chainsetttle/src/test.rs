@@ -222,3 +222,122 @@ fn test_full_shipment_lifecycle() {
     let escrow = client.get_escrow_balance(&shipment_id);
     assert_eq!(escrow, 0);
 }
+
+#[test]
+fn test_raise_and_resolve_dispute_approve() {
+    let (env, contract_id, token_id, buyer, supplier, logistics, arbiter) = setup();
+    let client = ChainSettleContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    let shipment_id = String::from_str(&env, "SHIP-DISPUTE");
+    let total_amount: i128 = 1_000_000_000;
+
+    client.create_shipment(
+        &shipment_id,
+        &buyer,
+        &supplier,
+        &logistics,
+        &arbiter,
+        &token_id,
+        &total_amount,
+        &build_milestones(&env),
+    );
+
+    client.submit_proof(&supplier, &shipment_id, &0, &String::from_str(&env, "ipfs://proof"));
+    client.raise_dispute(&buyer, &shipment_id, &0);
+
+    let m0 = client.get_milestone(&shipment_id, &0);
+    assert_eq!(m0.status, MilestoneStatus::Disputed);
+
+    client.resolve_dispute(&arbiter, &shipment_id, &0, &true);
+
+    let expected = total_amount * 25 / 100;
+    let supplier_balance = token_client.balance(&supplier);
+    assert_eq!(supplier_balance, expected);
+}
+
+#[test]
+fn test_raise_and_resolve_dispute_reject() {
+    let (env, contract_id, token_id, buyer, supplier, logistics, arbiter) = setup();
+    let client = ChainSettleContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    let shipment_id = String::from_str(&env, "SHIP-REJECT");
+    let total_amount: i128 = 1_000_000_000;
+
+    client.create_shipment(
+        &shipment_id,
+        &buyer,
+        &supplier,
+        &logistics,
+        &arbiter,
+        &token_id,
+        &total_amount,
+        &build_milestones(&env),
+    );
+
+    client.submit_proof(&supplier, &shipment_id, &0, &String::from_str(&env, "ipfs://bad-proof"));
+    client.raise_dispute(&buyer, &shipment_id, &0);
+    client.resolve_dispute(&arbiter, &shipment_id, &0, &false);
+
+    let m0 = client.get_milestone(&shipment_id, &0);
+    assert_eq!(m0.status, MilestoneStatus::Pending);
+
+    let supplier_balance = token_client.balance(&supplier);
+    assert_eq!(supplier_balance, 0);
+}
+
+#[test]
+fn test_cancel_shipment() {
+    let (env, contract_id, token_id, buyer, supplier, logistics, arbiter) = setup();
+    let client = ChainSettleContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    let shipment_id = String::from_str(&env, "SHIP-CANCEL");
+    let total_amount: i128 = 1_000_000_000;
+    let buyer_balance_before = token_client.balance(&buyer);
+
+    client.create_shipment(
+        &shipment_id,
+        &buyer,
+        &supplier,
+        &logistics,
+        &arbiter,
+        &token_id,
+        &total_amount,
+        &build_milestones(&env),
+    );
+
+    client.cancel_shipment(&buyer, &shipment_id);
+
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.status, ShipmentStatus::Cancelled);
+
+    let buyer_balance_after = token_client.balance(&buyer);
+    assert_eq!(buyer_balance_after, buyer_balance_before);
+}
+
+#[test]
+#[should_panic(expected = "unauthorized")]
+fn test_unauthorized_confirm_milestone() {
+    let (env, contract_id, token_id, buyer, supplier, logistics, arbiter) = setup();
+    let client = ChainSettleContractClient::new(&env, &contract_id);
+
+    let shipment_id = String::from_str(&env, "SHIP-AUTH");
+
+    client.create_shipment(
+        &shipment_id,
+        &buyer,
+        &supplier,
+        &logistics,
+        &arbiter,
+        &token_id,
+        &1_000_000_000,
+        &build_milestones(&env),
+    );
+
+    client.submit_proof(&supplier, &shipment_id, &0, &String::from_str(&env, "ipfs://proof"));
+
+    // Supplier tries to confirm — should panic
+    client.confirm_milestone(&supplier, &shipment_id, &0);
+}

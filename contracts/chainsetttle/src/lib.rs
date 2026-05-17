@@ -285,6 +285,160 @@ impl ChainSettleContract {
     }
 
     // ----------------------------------------------------------
+    // RAISE DISPUTE
+    // ----------------------------------------------------------
+
+    /// Buyer raises a dispute on a milestone that has proof submitted.
+    pub fn raise_dispute(
+        env: Env,
+        buyer: Address,
+        shipment_id: String,
+        milestone_index: u32,
+    ) {
+        buyer.require_auth();
+
+        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+
+        if shipment.status != ShipmentStatus::Active {
+            panic!("shipment is not active");
+        }
+
+        if buyer != shipment.buyer {
+            panic!("unauthorized");
+        }
+
+        let mut milestone = shipment.milestones.get(milestone_index).unwrap();
+
+        if milestone.status != MilestoneStatus::ProofSubmitted {
+            panic!("can only dispute a submitted proof");
+        }
+
+        milestone.status = MilestoneStatus::Disputed;
+        shipment.milestones.set(milestone_index, milestone);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
+
+        env.events().publish(
+            (Symbol::new(&env, "dispute_raised"), shipment_id.clone()),
+            milestone_index,
+        );
+    }
+
+    // ----------------------------------------------------------
+    // RESOLVE DISPUTE
+    // ----------------------------------------------------------
+
+    /// Arbiter resolves a disputed milestone.
+    /// approve = true  → payment released to supplier.
+    /// approve = false → milestone reset to Pending, supplier must resubmit.
+    pub fn resolve_dispute(
+        env: Env,
+        arbiter: Address,
+        shipment_id: String,
+        milestone_index: u32,
+        approve: bool,
+    ) {
+        arbiter.require_auth();
+
+        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+
+        if shipment.status != ShipmentStatus::Active {
+            panic!("shipment is not active");
+        }
+
+        if arbiter != shipment.arbiter {
+            panic!("unauthorized");
+        }
+
+        let mut milestone = shipment.milestones.get(milestone_index).unwrap();
+
+        if milestone.status != MilestoneStatus::Disputed {
+            panic!("milestone is not in disputed status");
+        }
+
+        if approve {
+            let payment = (shipment.total_amount * milestone.payment_percent as i128) / 100;
+            shipment.released_amount += payment;
+
+            let token_client = token::Client::new(&env, &shipment.token);
+            token_client.transfer(
+                &env.current_contract_address(),
+                &shipment.supplier,
+                &payment,
+            );
+
+            milestone.status = MilestoneStatus::Resolved;
+        } else {
+            milestone.status = MilestoneStatus::Pending;
+            milestone.proof_hash = String::from_str(&env, "");
+        }
+
+        shipment.milestones.set(milestone_index, milestone);
+
+        let all_done = (0..shipment.milestones.len()).all(|i| {
+            let s = shipment.milestones.get(i).unwrap().status;
+            s == MilestoneStatus::Confirmed || s == MilestoneStatus::Resolved
+        });
+
+        if all_done {
+            shipment.status = ShipmentStatus::Completed;
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
+
+        env.events().publish(
+            (Symbol::new(&env, "dispute_resolved"), shipment_id.clone()),
+            (milestone_index, approve),
+        );
+    }
+
+    // ----------------------------------------------------------
+    // CANCEL SHIPMENT
+    // ----------------------------------------------------------
+
+    /// Cancel the shipment and return remaining escrowed funds to the buyer.
+    /// Only callable by the buyer. Only allowed if no milestones are yet Confirmed.
+    pub fn cancel_shipment(env: Env, buyer: Address, shipment_id: String) {
+        buyer.require_auth();
+
+        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+
+        if shipment.status != ShipmentStatus::Active {
+            panic!("shipment is not active");
+        }
+
+        if buyer != shipment.buyer {
+            panic!("unauthorized");
+        }
+
+        for i in 0..shipment.milestones.len() {
+            let m = shipment.milestones.get(i).unwrap();
+            if m.status == MilestoneStatus::Confirmed || m.status == MilestoneStatus::Resolved {
+                panic!("cannot cancel: milestones already confirmed");
+            }
+        }
+
+        let refund = shipment.total_amount - shipment.released_amount;
+        let token_client = token::Client::new(&env, &shipment.token);
+        token_client.transfer(&env.current_contract_address(), &shipment.buyer, &refund);
+
+        shipment.status = ShipmentStatus::Cancelled;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
+
+        env.events().publish(
+            (Symbol::new(&env, "shipment_cancelled"), shipment_id.clone()),
+            refund,
+        );
+    }
+
+    // ----------------------------------------------------------
     // READ-ONLY QUERIES
     // ----------------------------------------------------------
 
