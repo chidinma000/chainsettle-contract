@@ -175,6 +175,116 @@ impl ChainSettleContract {
     }
 
     // ----------------------------------------------------------
+    // SUBMIT PROOF
+    // ----------------------------------------------------------
+
+    /// Supplier or logistics party submits proof for a milestone.
+    pub fn submit_proof(
+        env: Env,
+        caller: Address,
+        shipment_id: String,
+        milestone_index: u32,
+        proof_hash: String,
+    ) {
+        caller.require_auth();
+
+        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+
+        if shipment.status != ShipmentStatus::Active {
+            panic!("shipment is not active");
+        }
+
+        let idx = milestone_index as usize;
+        if idx >= shipment.milestones.len() as usize {
+            panic!("invalid milestone index");
+        }
+
+        let mut milestone = shipment.milestones.get(milestone_index).unwrap();
+
+        if milestone.status != MilestoneStatus::Pending {
+            panic!("milestone is not in pending status");
+        }
+
+        if caller != shipment.supplier && caller != shipment.logistics {
+            panic!("unauthorized");
+        }
+
+        milestone.proof_hash = proof_hash;
+        milestone.status = MilestoneStatus::ProofSubmitted;
+        shipment.milestones.set(milestone_index, milestone);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
+
+        env.events().publish(
+            (Symbol::new(&env, "proof_submitted"), shipment_id.clone()),
+            milestone_index,
+        );
+    }
+
+    // ----------------------------------------------------------
+    // CONFIRM MILESTONE
+    // ----------------------------------------------------------
+
+    /// Buyer confirms a milestone and triggers automatic payment release.
+    pub fn confirm_milestone(
+        env: Env,
+        buyer: Address,
+        shipment_id: String,
+        milestone_index: u32,
+    ) {
+        buyer.require_auth();
+
+        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+
+        if shipment.status != ShipmentStatus::Active {
+            panic!("shipment is not active");
+        }
+
+        if buyer != shipment.buyer {
+            panic!("unauthorized");
+        }
+
+        let idx = milestone_index as usize;
+        if idx >= shipment.milestones.len() as usize {
+            panic!("invalid milestone index");
+        }
+
+        let mut milestone = shipment.milestones.get(milestone_index).unwrap();
+
+        if milestone.status != MilestoneStatus::ProofSubmitted {
+            panic!("milestone proof not yet submitted");
+        }
+
+        milestone.status = MilestoneStatus::Confirmed;
+        shipment.milestones.set(milestone_index, milestone.clone());
+
+        let payment = (shipment.total_amount * milestone.payment_percent as i128) / 100;
+        shipment.released_amount += payment;
+
+        let token_client = token::Client::new(&env, &shipment.token);
+        token_client.transfer(&env.current_contract_address(), &shipment.supplier, &payment);
+
+        let all_confirmed = (0..shipment.milestones.len()).all(|i| {
+            shipment.milestones.get(i).unwrap().status == MilestoneStatus::Confirmed
+        });
+
+        if all_confirmed {
+            shipment.status = ShipmentStatus::Completed;
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
+
+        env.events().publish(
+            (Symbol::new(&env, "milestone_confirmed"), shipment_id.clone()),
+            (milestone_index, payment),
+        );
+    }
+
+    // ----------------------------------------------------------
     // READ-ONLY QUERIES
     // ----------------------------------------------------------
 

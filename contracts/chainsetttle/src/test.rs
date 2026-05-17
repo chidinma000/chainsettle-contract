@@ -141,3 +141,84 @@ fn test_create_shipment_invalid_percentages() {
         &bad_milestones,
     );
 }
+
+#[test]
+fn test_submit_proof_and_confirm_milestone() {
+    let (env, contract_id, token_id, buyer, supplier, logistics, arbiter) = setup();
+    let client = ChainSettleContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    let shipment_id = String::from_str(&env, "SHIP-001");
+    let total_amount: i128 = 1_000_000_000;
+
+    client.create_shipment(
+        &shipment_id,
+        &buyer,
+        &supplier,
+        &logistics,
+        &arbiter,
+        &token_id,
+        &total_amount,
+        &build_milestones(&env),
+    );
+
+    client.submit_proof(
+        &supplier,
+        &shipment_id,
+        &0,
+        &String::from_str(&env, "ipfs://QmXxx...dispatch"),
+    );
+
+    let m0 = client.get_milestone(&shipment_id, &0);
+    assert_eq!(m0.status, MilestoneStatus::ProofSubmitted);
+
+    client.confirm_milestone(&buyer, &shipment_id, &0);
+
+    let expected_payment = total_amount * 25 / 100;
+    let supplier_balance = token_client.balance(&supplier);
+    assert_eq!(supplier_balance, expected_payment);
+
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.released_amount, expected_payment);
+    assert_eq!(shipment.status, ShipmentStatus::Active); // not complete yet
+}
+
+#[test]
+fn test_full_shipment_lifecycle() {
+    let (env, contract_id, token_id, buyer, supplier, logistics, arbiter) = setup();
+    let client = ChainSettleContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    let shipment_id = String::from_str(&env, "SHIP-FULL");
+    let total_amount: i128 = 1_000_000_000;
+
+    client.create_shipment(
+        &shipment_id,
+        &buyer,
+        &supplier,
+        &logistics,
+        &arbiter,
+        &token_id,
+        &total_amount,
+        &build_milestones(&env),
+    );
+
+    client.submit_proof(&supplier, &shipment_id, &0, &String::from_str(&env, "ipfs://dispatch"));
+    client.confirm_milestone(&buyer, &shipment_id, &0);
+
+    client.submit_proof(&logistics, &shipment_id, &1, &String::from_str(&env, "ipfs://transit"));
+    client.confirm_milestone(&buyer, &shipment_id, &1);
+
+    client.submit_proof(&supplier, &shipment_id, &2, &String::from_str(&env, "ipfs://delivered"));
+    client.confirm_milestone(&buyer, &shipment_id, &2);
+
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.status, ShipmentStatus::Completed);
+    assert_eq!(shipment.released_amount, total_amount);
+
+    let supplier_balance = token_client.balance(&supplier);
+    assert_eq!(supplier_balance, total_amount);
+
+    let escrow = client.get_escrow_balance(&shipment_id);
+    assert_eq!(escrow, 0);
+}
