@@ -64,3 +64,80 @@ fn build_milestones(env: &Env) -> Vec<Milestone> {
         },
     ]
 }
+
+// ============================================================
+// TESTS
+// ============================================================
+
+#[test]
+fn test_create_shipment_success() {
+    let (env, contract_id, token_id, buyer, supplier, logistics, arbiter) = setup();
+    let client = ChainSettleContractClient::new(&env, &contract_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    let shipment_id = String::from_str(&env, "SHIP-001");
+    let total_amount: i128 = 1_000_000_000;
+
+    client.create_shipment(
+        &shipment_id,
+        &buyer,
+        &supplier,
+        &logistics,
+        &arbiter,
+        &token_id,
+        &total_amount,
+        &build_milestones(&env),
+    );
+
+    let buyer_balance = token_client.balance(&buyer);
+    assert_eq!(buyer_balance, 10_000_000_000 - total_amount);
+
+    let escrow_balance = token_client.balance(&contract_id);
+    assert_eq!(escrow_balance, total_amount);
+
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.status, ShipmentStatus::Active);
+    assert_eq!(shipment.total_amount, total_amount);
+    assert_eq!(shipment.released_amount, 0);
+    assert_eq!(shipment.milestones.len(), 3);
+}
+
+#[test]
+#[should_panic(expected = "milestone percentages must sum to 100")]
+fn test_create_shipment_invalid_percentages() {
+    let (env, contract_id, token_id, buyer, supplier, logistics, arbiter) = setup();
+    let client = ChainSettleContractClient::new(&env, &contract_id);
+
+    let bad_milestones = vec![
+        &env,
+        Milestone {
+            name: String::from_str(&env, "Step 1"),
+            payment_percent: 30,
+            proof_hash: String::from_str(&env, ""),
+            status: MilestoneStatus::Pending,
+        },
+        Milestone {
+            name: String::from_str(&env, "Step 2"),
+            payment_percent: 30,
+            proof_hash: String::from_str(&env, ""),
+            status: MilestoneStatus::Pending,
+        },
+        Milestone {
+            name: String::from_str(&env, "Step 3"),
+            payment_percent: 30,
+            proof_hash: String::from_str(&env, ""),
+            status: MilestoneStatus::Pending,
+        },
+    ];
+
+    client.create_shipment(
+        &String::from_str(&env, "SHIP-BAD"),
+        &buyer,
+        &supplier,
+        &logistics,
+        &arbiter,
+        &token_id,
+        &1_000_000_000,
+        &bad_milestones,
+    );
+}
