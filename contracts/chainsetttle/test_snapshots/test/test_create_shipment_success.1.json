@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 9,
+    "address": 7,
     "nonce": 0
   },
   "auth": [
@@ -51,31 +51,6 @@
     ],
     [
       [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF",
-              "function_name": "mint",
-              "args": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                },
-                {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 10000000000
-                  }
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
-    [
-      [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
         {
           "function": {
@@ -106,20 +81,16 @@
                   "string": "SHIP-001"
                 },
                 {
-                  "vec": [
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                    }
-                  ]
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
                 },
                 {
                   "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
@@ -134,20 +105,6 @@
                   "vec": [
                     {
                       "map": [
-                        {
-                          "key": {
-                            "symbol": "approvals"
-                          },
-                          "val": {
-                            "vec": []
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "deadline_ledger"
-                          },
-                          "val": "void"
-                        },
                         {
                           "key": {
                             "symbol": "name"
@@ -174,6 +131,14 @@
                         },
                         {
                           "key": {
+                            "symbol": "release_after_ledger"
+                          },
+                          "val": {
+                            "u32": 0
+                          }
+                        },
+                        {
+                          "key": {
                             "symbol": "status"
                           },
                           "val": {
@@ -188,20 +153,6 @@
                     },
                     {
                       "map": [
-                        {
-                          "key": {
-                            "symbol": "approvals"
-                          },
-                          "val": {
-                            "vec": []
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "deadline_ledger"
-                          },
-                          "val": "void"
-                        },
                         {
                           "key": {
                             "symbol": "name"
@@ -228,6 +179,14 @@
                         },
                         {
                           "key": {
+                            "symbol": "release_after_ledger"
+                          },
+                          "val": {
+                            "u32": 0
+                          }
+                        },
+                        {
+                          "key": {
                             "symbol": "status"
                           },
                           "val": {
@@ -242,20 +201,6 @@
                     },
                     {
                       "map": [
-                        {
-                          "key": {
-                            "symbol": "approvals"
-                          },
-                          "val": {
-                            "vec": []
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "deadline_ledger"
-                          },
-                          "val": "void"
-                        },
                         {
                           "key": {
                             "symbol": "name"
@@ -282,6 +227,14 @@
                         },
                         {
                           "key": {
+                            "symbol": "release_after_ledger"
+                          },
+                          "val": {
+                            "u32": 0
+                          }
+                        },
+                        {
+                          "key": {
                             "symbol": "status"
                           },
                           "val": {
@@ -297,11 +250,10 @@
                   ]
                 },
                 {
-                  "vec": [
-                    {
-                      "symbol": "Parallel"
-                    }
-                  ]
+                  "bool": false
+                },
+                {
+                  "u32": 0
                 }
               ]
             }
@@ -451,24 +403,28 @@
                         "symbol": "arbiter"
                       },
                       "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                       }
                     },
                     {
                       "key": {
-                        "symbol": "buyers"
+                        "symbol": "buyer"
                       },
                       "val": {
-                        "vec": [
-                          {
-                            "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                          }
-                        ]
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                       }
                     },
                     {
                       "key": {
                         "symbol": "created_at"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "holdback_ledgers"
                       },
                       "val": {
                         "u32": 0
@@ -487,19 +443,7 @@
                         "symbol": "logistics"
                       },
                       "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "milestone_mode"
-                      },
-                      "val": {
-                        "vec": [
-                          {
-                            "symbol": "Parallel"
-                          }
-                        ]
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                       }
                     },
                     {
@@ -510,20 +454,6 @@
                         "vec": [
                           {
                             "map": [
-                              {
-                                "key": {
-                                  "symbol": "approvals"
-                                },
-                                "val": {
-                                  "vec": []
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "deadline_ledger"
-                                },
-                                "val": "void"
-                              },
                               {
                                 "key": {
                                   "symbol": "name"
@@ -550,6 +480,14 @@
                               },
                               {
                                 "key": {
+                                  "symbol": "release_after_ledger"
+                                },
+                                "val": {
+                                  "u32": 0
+                                }
+                              },
+                              {
+                                "key": {
                                   "symbol": "status"
                                 },
                                 "val": {
@@ -564,20 +502,6 @@
                           },
                           {
                             "map": [
-                              {
-                                "key": {
-                                  "symbol": "approvals"
-                                },
-                                "val": {
-                                  "vec": []
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "deadline_ledger"
-                                },
-                                "val": "void"
-                              },
                               {
                                 "key": {
                                   "symbol": "name"
@@ -604,6 +528,14 @@
                               },
                               {
                                 "key": {
+                                  "symbol": "release_after_ledger"
+                                },
+                                "val": {
+                                  "u32": 0
+                                }
+                              },
+                              {
+                                "key": {
                                   "symbol": "status"
                                 },
                                 "val": {
@@ -618,20 +550,6 @@
                           },
                           {
                             "map": [
-                              {
-                                "key": {
-                                  "symbol": "approvals"
-                                },
-                                "val": {
-                                  "vec": []
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "deadline_ledger"
-                                },
-                                "val": "void"
-                              },
                               {
                                 "key": {
                                   "symbol": "name"
@@ -654,6 +572,14 @@
                                 },
                                 "val": {
                                   "string": ""
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "release_after_ledger"
+                                },
+                                "val": {
+                                  "u32": 0
                                 }
                               },
                               {
@@ -686,6 +612,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "sequential"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "status"
                       },
                       "val": {
@@ -701,7 +635,7 @@
                         "symbol": "supplier"
                       },
                       "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                       }
                     },
                     {
@@ -783,39 +717,6 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 1033654523790656264
-              }
-            },
-            "durability": "temporary"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-                "key": {
-                  "ledger_key_nonce": {
-                    "nonce": 1033654523790656264
-                  }
-                },
-                "durability": "temporary",
-                "val": "void"
-              }
-            },
-            "ext": "v0"
-          },
-          6311999
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-            "key": {
-              "ledger_key_nonce": {
                 "nonce": 5541220902715666415
               }
             },
@@ -849,7 +750,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 2032731177588607455
+                "nonce": 1033654523790656264
               }
             },
             "durability": "temporary"
@@ -864,7 +765,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 2032731177588607455
+                    "nonce": 1033654523790656264
                   }
                 },
                 "durability": "temporary",
@@ -1027,79 +928,6 @@
                         "i128": {
                           "hi": 0,
                           "lo": 9000000000
-                        }
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "authorized"
-                      },
-                      "val": {
-                        "bool": true
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "clawback"
-                      },
-                      "val": {
-                        "bool": false
-                      }
-                    }
-                  ]
-                }
-              }
-            },
-            "ext": "v0"
-          },
-          518400
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF",
-            "key": {
-              "vec": [
-                {
-                  "symbol": "Balance"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                }
-              ]
-            },
-            "durability": "persistent"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF",
-                "key": {
-                  "vec": [
-                    {
-                      "symbol": "Balance"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                    }
-                  ]
-                },
-                "durability": "persistent",
-                "val": {
-                  "map": [
-                    {
-                      "key": {
-                        "symbol": "amount"
-                      },
-                      "val": {
-                        "i128": {
-                          "hi": 0,
-                          "lo": 10000000000
                         }
                       }
                     },
