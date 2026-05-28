@@ -103,7 +103,7 @@
               "function_name": "create_shipment",
               "args": [
                 {
-                  "string": "SHIP-VETO"
+                  "string": "SHIP-MULTI-VETO"
                 },
                 {
                   "vec": [
@@ -139,20 +139,6 @@
                       "map": [
                         {
                           "key": {
-                            "symbol": "approvals"
-                          },
-                          "val": {
-                            "vec": []
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "deadline_ledger"
-                          },
-                          "val": "void"
-                        },
-                        {
-                          "key": {
                             "symbol": "name"
                           },
                           "val": {
@@ -177,6 +163,14 @@
                         },
                         {
                           "key": {
+                            "symbol": "release_after_ledger"
+                          },
+                          "val": {
+                            "u32": 0
+                          }
+                        },
+                        {
+                          "key": {
                             "symbol": "status"
                           },
                           "val": {
@@ -191,20 +185,6 @@
                     },
                     {
                       "map": [
-                        {
-                          "key": {
-                            "symbol": "approvals"
-                          },
-                          "val": {
-                            "vec": []
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "deadline_ledger"
-                          },
-                          "val": "void"
-                        },
                         {
                           "key": {
                             "symbol": "name"
@@ -231,6 +211,14 @@
                         },
                         {
                           "key": {
+                            "symbol": "release_after_ledger"
+                          },
+                          "val": {
+                            "u32": 0
+                          }
+                        },
+                        {
+                          "key": {
                             "symbol": "status"
                           },
                           "val": {
@@ -245,20 +233,6 @@
                     },
                     {
                       "map": [
-                        {
-                          "key": {
-                            "symbol": "approvals"
-                          },
-                          "val": {
-                            "vec": []
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "deadline_ledger"
-                          },
-                          "val": "void"
-                        },
                         {
                           "key": {
                             "symbol": "name"
@@ -285,6 +259,14 @@
                         },
                         {
                           "key": {
+                            "symbol": "release_after_ledger"
+                          },
+                          "val": {
+                            "u32": 0
+                          }
+                        },
+                        {
+                          "key": {
                             "symbol": "status"
                           },
                           "val": {
@@ -300,9 +282,50 @@
                   ]
                 },
                 {
-                  "vec": [
+                  "map": [
                     {
-                      "symbol": "Parallel"
+                      "key": {
+                        "symbol": "dispute_cooldown_ledgers"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "holdback_ledgers"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "milestone_mode"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Parallel"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "penalty_bps"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "response_deadline"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
                     }
                   ]
                 }
@@ -345,7 +368,7 @@
               "function_name": "create_shipment",
               "args": [
                 {
-                  "string": "SHIP-VETO"
+                  "string": "SHIP-MULTI-VETO"
                 },
                 {
                   "vec": [
@@ -381,20 +404,6 @@
                       "map": [
                         {
                           "key": {
-                            "symbol": "approvals"
-                          },
-                          "val": {
-                            "vec": []
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "deadline_ledger"
-                          },
-                          "val": "void"
-                        },
-                        {
-                          "key": {
                             "symbol": "name"
                           },
                           "val": {
@@ -419,6 +428,14 @@
                         },
                         {
                           "key": {
+                            "symbol": "release_after_ledger"
+                          },
+                          "val": {
+                            "u32": 0
+                          }
+                        },
+                        {
+                          "key": {
                             "symbol": "status"
                           },
                           "val": {
@@ -433,20 +450,6 @@
                     },
                     {
                       "map": [
-                        {
-                          "key": {
-                            "symbol": "approvals"
-                          },
-                          "val": {
-                            "vec": []
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "deadline_ledger"
-                          },
-                          "val": "void"
-                        },
                         {
                           "key": {
                             "symbol": "name"
@@ -473,6 +476,14 @@
                         },
                         {
                           "key": {
+                            "symbol": "release_after_ledger"
+                          },
+                          "val": {
+                            "u32": 0
+                          }
+                        },
+                        {
+                          "key": {
                             "symbol": "status"
                           },
                           "val": {
@@ -487,20 +498,6 @@
                     },
                     {
                       "map": [
-                        {
-                          "key": {
-                            "symbol": "approvals"
-                          },
-                          "val": {
-                            "vec": []
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "deadline_ledger"
-                          },
-                          "val": "void"
-                        },
                         {
                           "key": {
                             "symbol": "name"
@@ -527,6 +524,14 @@
                         },
                         {
                           "key": {
+                            "symbol": "release_after_ledger"
+                          },
+                          "val": {
+                            "u32": 0
+                          }
+                        },
+                        {
+                          "key": {
                             "symbol": "status"
                           },
                           "val": {
@@ -542,9 +547,50 @@
                   ]
                 },
                 {
-                  "vec": [
+                  "map": [
                     {
-                      "symbol": "Parallel"
+                      "key": {
+                        "symbol": "dispute_cooldown_ledgers"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "holdback_ledgers"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "milestone_mode"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Parallel"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "penalty_bps"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "response_deadline"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
                     }
                   ]
                 }
@@ -568,13 +614,13 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "string": "SHIP-VETO"
+                  "string": "SHIP-MULTI-VETO"
                 },
                 {
                   "u32": 0
                 },
                 {
-                  "string": "ipfs://proof"
+                  "string": "ipfs://d"
                 }
               ]
             }
@@ -596,7 +642,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "string": "SHIP-VETO"
+                  "string": "SHIP-MULTI-VETO"
                 },
                 {
                   "u32": 0
@@ -688,10 +734,123 @@
             "key": {
               "vec": [
                 {
+                  "symbol": "CancelPolicy"
+                },
+                {
+                  "string": "SHIP-MULTI-VETO"
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "CancelPolicy"
+                    },
+                    {
+                      "string": "SHIP-MULTI-VETO"
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "map": [
+                    {
+                      "key": {
+                        "symbol": "penalty_bps"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "response_deadline"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
+                  "symbol": "ProofSubmittedAt"
+                },
+                {
+                  "string": "SHIP-MULTI-VETO"
+                },
+                {
+                  "u32": 0
+                }
+              ]
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "vec": [
+                    {
+                      "symbol": "ProofSubmittedAt"
+                    },
+                    {
+                      "string": "SHIP-MULTI-VETO"
+                    },
+                    {
+                      "u32": 0
+                    }
+                  ]
+                },
+                "durability": "persistent",
+                "val": {
+                  "u32": 0
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "vec": [
+                {
                   "symbol": "Shipment"
                 },
                 {
-                  "string": "SHIP-VETO"
+                  "string": "SHIP-MULTI-VETO"
                 }
               ]
             },
@@ -711,7 +870,7 @@
                       "symbol": "Shipment"
                     },
                     {
-                      "string": "SHIP-VETO"
+                      "string": "SHIP-MULTI-VETO"
                     }
                   ]
                 },
@@ -751,11 +910,33 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_cooldown_ledgers"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "holdback_ledgers"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "SHIP-VETO"
+                        "string": "SHIP-MULTI-VETO"
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "last_dispute_resolved_ledger"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {
@@ -787,20 +968,6 @@
                             "map": [
                               {
                                 "key": {
-                                  "symbol": "approvals"
-                                },
-                                "val": {
-                                  "vec": []
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "deadline_ledger"
-                                },
-                                "val": "void"
-                              },
-                              {
-                                "key": {
                                   "symbol": "name"
                                 },
                                 "val": {
@@ -820,7 +987,15 @@
                                   "symbol": "proof_hash"
                                 },
                                 "val": {
-                                  "string": "ipfs://proof"
+                                  "string": "ipfs://d"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "release_after_ledger"
+                                },
+                                "val": {
+                                  "u32": 0
                                 }
                               },
                               {
@@ -839,20 +1014,6 @@
                           },
                           {
                             "map": [
-                              {
-                                "key": {
-                                  "symbol": "approvals"
-                                },
-                                "val": {
-                                  "vec": []
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "deadline_ledger"
-                                },
-                                "val": "void"
-                              },
                               {
                                 "key": {
                                   "symbol": "name"
@@ -879,6 +1040,14 @@
                               },
                               {
                                 "key": {
+                                  "symbol": "release_after_ledger"
+                                },
+                                "val": {
+                                  "u32": 0
+                                }
+                              },
+                              {
+                                "key": {
                                   "symbol": "status"
                                 },
                                 "val": {
@@ -893,20 +1062,6 @@
                           },
                           {
                             "map": [
-                              {
-                                "key": {
-                                  "symbol": "approvals"
-                                },
-                                "val": {
-                                  "vec": []
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "deadline_ledger"
-                                },
-                                "val": "void"
-                              },
                               {
                                 "key": {
                                   "symbol": "name"
@@ -929,6 +1084,14 @@
                                 },
                                 "val": {
                                   "string": ""
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "release_after_ledger"
+                                },
+                                "val": {
+                                  "u32": 0
                                 }
                               },
                               {
@@ -1040,6 +1203,18 @@
                         },
                         "val": {
                           "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Paused"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "bool": false
                         }
                       }
                     ]
