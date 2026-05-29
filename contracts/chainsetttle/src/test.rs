@@ -1448,3 +1448,235 @@ fn test_fee_deducted_on_dispute_resolve_approve() {
     assert_eq!(token_client.balance(&t.treasury), fee);
 }
 
+// ============================================================
+// SUPPLIER SHIPMENTS INDEX TESTS
+// ============================================================
+
+#[test]
+fn test_get_shipments_by_supplier_single() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+
+    let shipment_id = String::from_str(&t.env, "SHIP-SUP-1");
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
+    );
+
+    let supplier_shipments = client.get_shipments_by_supplier(&t.supplier);
+    assert_eq!(supplier_shipments.len(), 1);
+    assert_eq!(supplier_shipments.get(0).unwrap(), shipment_id);
+}
+
+#[test]
+fn test_get_shipments_by_supplier_multiple_same() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+
+    let shipment_id_1 = String::from_str(&t.env, "SHIP-SUP-1");
+    let shipment_id_2 = String::from_str(&t.env, "SHIP-SUP-2");
+    let shipment_id_3 = String::from_str(&t.env, "SHIP-SUP-3");
+
+    create_standard_shipment(
+        &client, &t.env, &shipment_id_1, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
+    );
+    create_standard_shipment(
+        &client, &t.env, &shipment_id_2, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
+    );
+    create_standard_shipment(
+        &client, &t.env, &shipment_id_3, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
+    );
+
+    let supplier_shipments = client.get_shipments_by_supplier(&t.supplier);
+    assert_eq!(supplier_shipments.len(), 3);
+    assert_eq!(supplier_shipments.get(0).unwrap(), shipment_id_1);
+    assert_eq!(supplier_shipments.get(1).unwrap(), shipment_id_2);
+    assert_eq!(supplier_shipments.get(2).unwrap(), shipment_id_3);
+}
+
+#[test]
+fn test_get_shipments_by_supplier_cross_supplier_isolation() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+
+    let supplier_a = Address::generate(&t.env);
+    let supplier_b = Address::generate(&t.env);
+
+    let shipment_a = String::from_str(&t.env, "SHIP-A");
+    let shipment_b = String::from_str(&t.env, "SHIP-B");
+
+    // Create shipment with supplier_a
+    t.env.mock_all_auths();
+    client.create_shipment(
+        &shipment_a,
+        &single_buyer_vec(&t.env, &t.buyer),
+        &supplier_a,
+        &t.logistics,
+        &t.arbiter,
+        &t.token_id,
+        &1_000_000_000,
+        &build_milestones(&t.env),
+        &default_options(&t.env),
+    );
+
+    // Create shipment with supplier_b
+    client.create_shipment(
+        &shipment_b,
+        &single_buyer_vec(&t.env, &t.buyer),
+        &supplier_b,
+        &t.logistics,
+        &t.arbiter,
+        &t.token_id,
+        &1_000_000_000,
+        &build_milestones(&t.env),
+        &default_options(&t.env),
+    );
+
+    // Verify supplier_a only has their shipment
+    let shipments_a = client.get_shipments_by_supplier(&supplier_a);
+    assert_eq!(shipments_a.len(), 1);
+    assert_eq!(shipments_a.get(0).unwrap(), shipment_a);
+
+    // Verify supplier_b only has their shipment
+    let shipments_b = client.get_shipments_by_supplier(&supplier_b);
+    assert_eq!(shipments_b.len(), 1);
+    assert_eq!(shipments_b.get(0).unwrap(), shipment_b);
+
+    // Verify original supplier (from setup) has no shipments
+    let shipments_original = client.get_shipments_by_supplier(&t.supplier);
+    assert_eq!(shipments_original.len(), 0);
+}
+
+// ============================================================
+// BUYER SHIPMENTS INDEX TESTS
+// ============================================================
+
+#[test]
+fn test_get_shipments_by_buyer_single() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+
+    let shipment_id = String::from_str(&t.env, "SHIP-BUYER-1");
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
+    );
+
+    let buyer_shipments = client.get_shipments_by_buyer(&t.buyer);
+    assert_eq!(buyer_shipments.len(), 1);
+    assert_eq!(buyer_shipments.get(0).unwrap(), shipment_id);
+}
+
+#[test]
+fn test_get_shipments_by_buyer_multiple_same() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+
+    let shipment_id_1 = String::from_str(&t.env, "SHIP-BUYER-1");
+    let shipment_id_2 = String::from_str(&t.env, "SHIP-BUYER-2");
+    let shipment_id_3 = String::from_str(&t.env, "SHIP-BUYER-3");
+
+    create_standard_shipment(
+        &client, &t.env, &shipment_id_1, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
+    );
+    create_standard_shipment(
+        &client, &t.env, &shipment_id_2, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
+    );
+    create_standard_shipment(
+        &client, &t.env, &shipment_id_3, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
+    );
+
+    let buyer_shipments = client.get_shipments_by_buyer(&t.buyer);
+    assert_eq!(buyer_shipments.len(), 3);
+    assert_eq!(buyer_shipments.get(0).unwrap(), shipment_id_1);
+    assert_eq!(buyer_shipments.get(1).unwrap(), shipment_id_2);
+    assert_eq!(buyer_shipments.get(2).unwrap(), shipment_id_3);
+}
+
+#[test]
+fn test_get_shipments_by_buyer_different_buyer_isolation() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+
+    let buyer_a = Address::generate(&t.env);
+    let buyer_b = Address::generate(&t.env);
+    let supplier = Address::generate(&t.env);
+
+    let shipment_a = String::from_str(&t.env, "SHIP-A");
+    let shipment_b = String::from_str(&t.env, "SHIP-B");
+
+    // Create shipment with buyer_a
+    t.env.mock_all_auths();
+    let token_client = token::StellarAssetClient::new(&t.env, &t.token_id);
+    token_client.mint(&buyer_a, &10_000_000_000);
+    token_client.mint(&buyer_b, &10_000_000_000);
+
+    client.create_shipment(
+        &shipment_a,
+        &single_buyer_vec(&t.env, &buyer_a),
+        &supplier,
+        &t.logistics,
+        &t.arbiter,
+        &t.token_id,
+        &1_000_000_000,
+        &build_milestones(&t.env),
+        &default_options(&t.env),
+    );
+
+    // Create shipment with buyer_b
+    client.create_shipment(
+        &shipment_b,
+        &single_buyer_vec(&t.env, &buyer_b),
+        &supplier,
+        &t.logistics,
+        &t.arbiter,
+        &t.token_id,
+        &1_000_000_000,
+        &build_milestones(&t.env),
+        &default_options(&t.env),
+    );
+
+    // Verify buyer_a only has their shipment
+    let shipments_a = client.get_shipments_by_buyer(&buyer_a);
+    assert_eq!(shipments_a.len(), 1);
+    assert_eq!(shipments_a.get(0).unwrap(), shipment_a);
+
+    // Verify buyer_b only has their shipment
+    let shipments_b = client.get_shipments_by_buyer(&buyer_b);
+    assert_eq!(shipments_b.len(), 1);
+    assert_eq!(shipments_b.get(0).unwrap(), shipment_b);
+
+    // Verify original buyer (from setup) has no shipments
+    let shipments_original = client.get_shipments_by_buyer(&t.buyer);
+    assert_eq!(shipments_original.len(), 0);
+}
+
+#[test]
+fn test_get_shipments_by_buyer_persists_after_completion() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+
+    let shipment_id = String::from_str(&t.env, "SHIP-COMPLETE");
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
+    );
+
+    // Complete the shipment fully
+    for i in 0u32..3u32 {
+        client.submit_proof(&t.supplier, &shipment_id, &i, &String::from_str(&t.env, "ipfs://x"));
+        client.confirm_milestone(&t.buyer, &shipment_id, &i);
+    }
+
+    // Verify buyer still has the shipment indexed after completion
+    let buyer_shipments = client.get_shipments_by_buyer(&t.buyer);
+    assert_eq!(buyer_shipments.len(), 1);
+    assert_eq!(buyer_shipments.get(0).unwrap(), shipment_id);
+}
+

@@ -55,8 +55,21 @@ pub enum ShipmentStatus {
 
 #[contracttype]
 #[derive(Clone)]
+pub struct AuditEntry {
+    pub action: Symbol,
+    pub caller: Address,
+    pub ledger: u32,
+    pub detail: Symbol,
+}
+
+#[contracttype]
+#[derive(Clone)]
 pub struct Shipment {
     pub id: String,
+    /// Bounded audit log of status transitions (ring-buffer semantics, max 20).
+    pub audit_log: Vec<AuditEntry>,
+
+
     /// All co-buyers. All must call confirm_milestone for payment to release.
     /// raise_dispute requires only one co-buyer's signature.
     pub buyers: Vec<Address>,
@@ -174,6 +187,10 @@ pub enum DataKey {
     Shipment(String),
     CancelPolicy(String),
     AllShipments,
+    /// Supplier-to-shipments index: Vec<shipment_id> for a given supplier.
+    SupplierShipments(Address),
+    /// Buyer-to-shipments index: Vec<shipment_id> for a given buyer.
+    BuyerShipments(Address),
     Admin,
     /// Ledger sequence when a milestone entered ProofSubmitted state.
     ProofSubmittedAt(String, u32),
@@ -383,6 +400,7 @@ impl ChainSettleContract {
         milestones: Vec<Milestone>,
         options: ShipmentOptions,
     ) -> String {
+
         Self::assert_not_paused(&env);
         let response_deadline = options.response_deadline;
         let penalty_bps = options.penalty_bps;
@@ -456,10 +474,12 @@ impl ChainSettleContract {
             clean_milestones.push_back(m);
         }
 
-        let shipment = Shipment {
+        let mut shipment = Shipment {
             id: shipment_id.clone(),
+            audit_log: Vec::new(&env),
+
             buyers,
-            supplier,
+            supplier: supplier.clone(),
             logistics,
             arbiter,
             token: token.clone(),
@@ -476,6 +496,15 @@ impl ChainSettleContract {
             auto_confirm_ledgers,
         };
 
+        Self::append_audit_entry(
+            &env,
+            &mut shipment,
+            Symbol::new(&env, "shipment_created"),
+            Symbol::new(&env, "create_shipment"),
+        );
+
+
+
         env.storage()
             .persistent()
             .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
@@ -488,6 +517,37 @@ impl ChainSettleContract {
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Shipment(shipment_id.clone()), 100_000, 6_300_000);
+
+        // Index by supplier for supplier-facing dashboards.
+        let mut supplier_shipments: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SupplierShipments(supplier.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        supplier_shipments.push_back(shipment_id.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::SupplierShipments(supplier.clone()), &supplier_shipments);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::SupplierShipments(supplier.clone()), 100_000, 6_300_000);
+
+        // Index by each buyer for buyer-facing dashboards.
+        for i in 0..shipment.buyers.len() {
+            let buyer = shipment.buyers.get(i).unwrap();
+            let mut buyer_shipments: Vec<String> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::BuyerShipments(buyer.clone()))
+                .unwrap_or_else(|| Vec::new(&env));
+            buyer_shipments.push_back(shipment_id.clone());
+            env.storage()
+                .persistent()
+                .set(&DataKey::BuyerShipments(buyer.clone()), &buyer_shipments);
+            env.storage()
+                .persistent()
+                .extend_ttl(&DataKey::BuyerShipments(buyer.clone()), 100_000, 6_300_000);
+        }
 
         // Add to AllShipments list for pagination.
         let mut all_shipments: Vec<String> = env
@@ -1797,6 +1857,20 @@ impl ChainSettleContract {
         (result, next_cursor)
     }
 
+    pub fn get_shipments_by_supplier(env: Env, supplier: Address) -> Vec<String> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SupplierShipments(supplier))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    pub fn get_shipments_by_buyer(env: Env, buyer: Address) -> Vec<String> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::BuyerShipments(buyer))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
     // ----------------------------------------------------------
     // INTERNAL HELPERS
     // ----------------------------------------------------------
@@ -1853,7 +1927,32 @@ impl ChainSettleContract {
             .unwrap_or_else(|| panic!("shipment not found"))
     }
 
+    fn append_audit_entry(env: &Env, shipment: &mut Shipment, action: Symbol, detail: Symbol) {
+        // Maintain a bounded ring-buffer of max 20 entries.
+        let entry = AuditEntry {
+            action,
+            caller: env.storage().instance().get(&DataKey::Admin).unwrap_or_else(|| panic!("unauthorized")),
+            ledger: env.ledger().sequence(),
+
+            detail,
+        };
+
+        let max: usize = 20;
+        if shipment.audit_log.len() as usize >= max {
+            // Evict the oldest (index 0) by shifting left.
+            let mut new_log: Vec<AuditEntry> = Vec::new(env);
+            // Start from 1 to drop the first element.
+            for i in 1..shipment.audit_log.len() {
+                new_log.push_back(shipment.audit_log.get(i).unwrap());
+            }
+            shipment.audit_log = new_log;
+        }
+
+        shipment.audit_log.push_back(entry);
+    }
+
     fn all_milestones_done(shipment: &Shipment) -> bool {
+
         for i in 0..shipment.milestones.len() {
             let s = shipment.milestones.get(i).unwrap().status;
             if s != MilestoneStatus::Confirmed && s != MilestoneStatus::Resolved {
