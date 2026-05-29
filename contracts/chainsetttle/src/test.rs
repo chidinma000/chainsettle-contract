@@ -1448,3 +1448,173 @@ fn test_fee_deducted_on_dispute_resolve_approve() {
     assert_eq!(token_client.balance(&t.treasury), fee);
 }
 
+// ============================================================
+// list_shipments STATUS FILTER TESTS
+// ============================================================
+
+/// No-filter baseline: list_shipments(None) returns all shipment IDs.
+#[test]
+fn test_list_shipments_no_filter_baseline() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+
+    let id1 = String::from_str(&t.env, "FILTER-A");
+    let id2 = String::from_str(&t.env, "FILTER-B");
+    let id3 = String::from_str(&t.env, "FILTER-C");
+
+    create_standard_shipment(&client, &t.env, &id1, &t.buyer, &t.supplier, &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000);
+    create_standard_shipment(&client, &t.env, &id2, &t.buyer, &t.supplier, &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000);
+    create_standard_shipment(&client, &t.env, &id3, &t.buyer, &t.supplier, &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000);
+
+    let (ids, next) = client.list_shipments(&None, &50, &None);
+    assert_eq!(ids.len(), 3);
+    assert_eq!(ids.get(0).unwrap(), id1);
+    assert_eq!(ids.get(1).unwrap(), id2);
+    assert_eq!(ids.get(2).unwrap(), id3);
+    assert!(next.is_none());
+}
+
+/// Filtering by Active returns only active shipments.
+#[test]
+fn test_list_shipments_filter_active() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+
+    let id_active = String::from_str(&t.env, "FILTER-ACTIVE");
+    let id_cancelled = String::from_str(&t.env, "FILTER-CANCEL");
+
+    create_standard_shipment(&client, &t.env, &id_active, &t.buyer, &t.supplier, &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000);
+    create_standard_shipment(&client, &t.env, &id_cancelled, &t.buyer, &t.supplier, &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000);
+
+    // Cancel the second shipment.
+    client.cancel_shipment(&t.buyer, &id_cancelled);
+
+    let (active_ids, _) = client.list_shipments(&None, &50, &Some(ShipmentStatus::Active));
+    assert_eq!(active_ids.len(), 1);
+    assert_eq!(active_ids.get(0).unwrap(), id_active);
+}
+
+/// Filtering by Cancelled returns only cancelled shipments.
+#[test]
+fn test_list_shipments_filter_cancelled() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+
+    let id_active = String::from_str(&t.env, "FILTER-ACTIVE2");
+    let id_cancelled = String::from_str(&t.env, "FILTER-CANCEL2");
+
+    create_standard_shipment(&client, &t.env, &id_active, &t.buyer, &t.supplier, &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000);
+    create_standard_shipment(&client, &t.env, &id_cancelled, &t.buyer, &t.supplier, &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000);
+
+    client.cancel_shipment(&t.buyer, &id_cancelled);
+
+    let (cancelled_ids, _) = client.list_shipments(&None, &50, &Some(ShipmentStatus::Cancelled));
+    assert_eq!(cancelled_ids.len(), 1);
+    assert_eq!(cancelled_ids.get(0).unwrap(), id_cancelled);
+}
+
+/// Filtering by Completed returns only completed shipments.
+#[test]
+fn test_list_shipments_filter_completed() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+
+    let id_active = String::from_str(&t.env, "FILTER-ACTIVE3");
+    let id_complete = String::from_str(&t.env, "FILTER-COMPLETE3");
+
+    create_standard_shipment(&client, &t.env, &id_active, &t.buyer, &t.supplier, &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000);
+    create_standard_shipment(&client, &t.env, &id_complete, &t.buyer, &t.supplier, &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000);
+
+    // Complete all milestones of id_complete (3 milestones: 25 / 50 / 25).
+    client.submit_proof(&t.supplier, &id_complete, &0, &String::from_str(&t.env, "ipfs://d"));
+    client.confirm_milestone(&t.buyer, &id_complete, &0);
+    client.submit_proof(&t.logistics, &id_complete, &1, &String::from_str(&t.env, "ipfs://t"));
+    client.confirm_milestone(&t.buyer, &id_complete, &1);
+    client.submit_proof(&t.supplier, &id_complete, &2, &String::from_str(&t.env, "ipfs://v"));
+    client.confirm_milestone(&t.buyer, &id_complete, &2);
+
+    assert_eq!(client.get_shipment(&id_complete).status, ShipmentStatus::Completed);
+
+    let (completed_ids, _) = client.list_shipments(&None, &50, &Some(ShipmentStatus::Completed));
+    assert_eq!(completed_ids.len(), 1);
+    assert_eq!(completed_ids.get(0).unwrap(), id_complete);
+
+    // The still-active shipment should not appear in the Completed list.
+    let (active_ids, _) = client.list_shipments(&None, &50, &Some(ShipmentStatus::Active));
+    assert_eq!(active_ids.len(), 1);
+    assert_eq!(active_ids.get(0).unwrap(), id_active);
+}
+
+/// Status transition: cancel moves the ID from Active to Cancelled index.
+#[test]
+fn test_list_shipments_status_transition_cancel_updates_index() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+
+    let shipment_id = String::from_str(&t.env, "FILTER-TRANSITION-CANCEL");
+    create_standard_shipment(&client, &t.env, &shipment_id, &t.buyer, &t.supplier, &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000);
+
+    // Before cancel: Active = 1, Cancelled = 0.
+    let (active_before, _) = client.list_shipments(&None, &50, &Some(ShipmentStatus::Active));
+    let (cancelled_before, _) = client.list_shipments(&None, &50, &Some(ShipmentStatus::Cancelled));
+    assert_eq!(active_before.len(), 1);
+    assert_eq!(cancelled_before.len(), 0);
+
+    client.cancel_shipment(&t.buyer, &shipment_id);
+
+    // After cancel: Active = 0, Cancelled = 1.
+    let (active_after, _) = client.list_shipments(&None, &50, &Some(ShipmentStatus::Active));
+    let (cancelled_after, _) = client.list_shipments(&None, &50, &Some(ShipmentStatus::Cancelled));
+    assert_eq!(active_after.len(), 0);
+    assert_eq!(cancelled_after.len(), 1);
+    assert_eq!(cancelled_after.get(0).unwrap(), shipment_id);
+}
+
+/// Status transition: completing all milestones moves the ID from Active to Completed index.
+#[test]
+fn test_list_shipments_status_transition_complete_updates_index() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+
+    let shipment_id = String::from_str(&t.env, "FILTER-TRANSITION-COMPLETE");
+    create_standard_shipment(&client, &t.env, &shipment_id, &t.buyer, &t.supplier, &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000);
+
+    // Before completion: Active = 1, Completed = 0.
+    let (active_before, _) = client.list_shipments(&None, &50, &Some(ShipmentStatus::Active));
+    let (completed_before, _) = client.list_shipments(&None, &50, &Some(ShipmentStatus::Completed));
+    assert_eq!(active_before.len(), 1);
+    assert_eq!(completed_before.len(), 0);
+
+    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));
+    client.confirm_milestone(&t.buyer, &shipment_id, &0);
+    client.submit_proof(&t.logistics, &shipment_id, &1, &String::from_str(&t.env, "ipfs://t"));
+    client.confirm_milestone(&t.buyer, &shipment_id, &1);
+    client.submit_proof(&t.supplier, &shipment_id, &2, &String::from_str(&t.env, "ipfs://v"));
+    client.confirm_milestone(&t.buyer, &shipment_id, &2);
+
+    // After completion: Active = 0, Completed = 1.
+    let (active_after, _) = client.list_shipments(&None, &50, &Some(ShipmentStatus::Active));
+    let (completed_after, _) = client.list_shipments(&None, &50, &Some(ShipmentStatus::Completed));
+    assert_eq!(active_after.len(), 0);
+    assert_eq!(completed_after.len(), 1);
+    assert_eq!(completed_after.get(0).unwrap(), shipment_id);
+}
+
+/// Filtering a status that has no entries returns an empty list without panicking.
+#[test]
+fn test_list_shipments_filter_empty_status_returns_empty() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+
+    // Only create an active shipment — querying Cancelled/Completed should return nothing.
+    let id = String::from_str(&t.env, "FILTER-EMPTY");
+    create_standard_shipment(&client, &t.env, &id, &t.buyer, &t.supplier, &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000);
+
+    let (cancelled_ids, next) = client.list_shipments(&None, &50, &Some(ShipmentStatus::Cancelled));
+    assert_eq!(cancelled_ids.len(), 0);
+    assert!(next.is_none());
+
+    let (completed_ids, next2) = client.list_shipments(&None, &50, &Some(ShipmentStatus::Completed));
+    assert_eq!(completed_ids.len(), 0);
+    assert!(next2.is_none());
+}
