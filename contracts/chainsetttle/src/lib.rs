@@ -100,6 +100,8 @@ pub struct Shipment {
     pub auto_confirm_ledgers: u32,
     /// Number of currently open disputes on this shipment.
     pub open_dispute_count: u32,
+    /// Per-dispute bond amount locked by buyer at creation (0 = disabled, backward compatible).
+    pub dispute_bond_amount: i128,
 }
 
 /// Cancellation policy stored separately (keeps Shipment within the contracttype field limit).
@@ -158,6 +160,8 @@ pub struct ShipmentOptions {
     pub late_penalty_bps_per_ledger: u32,
     /// Ledgers after proof submission before auto-confirmation (0 = disabled).
     pub auto_confirm_ledgers: u32,
+    /// Bond amount locked per dispute; 0 = no bond required (default, backward compat).
+    pub dispute_bond_amount: i128,
 }
 
 /// Contract-level statistics for analytics and monitoring.
@@ -259,6 +263,8 @@ pub enum DataKey {
     MultiAdminConfig,
     /// Multi-admin approvals tracking: Vec<Address> who approved an action.
     AdminApprovals(String),
+    /// Pending admin nominee for two-step admin transfer.
+    PendingAdmin,
 }
 
 // ============================================================
@@ -286,6 +292,13 @@ pub enum ChainSettleError {
     TransferDisallowed = 15,
     CircuitBreakerTripped = 16,
 }
+
+// ============================================================
+// CONSTANTS
+// ============================================================
+
+/// Ledgers equivalent to approximately 2 years (≈ 5 s/ledger × 86 400 s/day × 365 days × 2).
+const RECOVERY_THRESHOLD_LEDGERS: u32 = 12_614_400;
 
 // ============================================================
 // CONTRACT
@@ -693,6 +706,7 @@ impl ChainSettleContract {
         let dispute_cooldown_ledgers = options.dispute_cooldown_ledgers;
         let late_penalty_bps_per_ledger = options.late_penalty_bps_per_ledger;
         let auto_confirm_ledgers = options.auto_confirm_ledgers;
+        let dispute_bond_amount = options.dispute_bond_amount;
 
         if buyers.is_empty() {
             panic!("at least one buyer is required");
@@ -778,6 +792,12 @@ impl ChainSettleContract {
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&primary_buyer, &env.current_contract_address(), &total_amount);
 
+        // Lock dispute bond pool: dispute_bond_amount * number_of_milestones (0 = disabled).
+        if dispute_bond_amount > 0 {
+            let bond_total = dispute_bond_amount * milestones.len() as i128;
+            token_client.transfer(&primary_buyer, &env.current_contract_address(), &bond_total);
+        }
+
         // Normalise milestones: clear any caller-supplied state.
         let mut clean_milestones: Vec<Milestone> = Vec::new(&env);
         for i in 0..milestones.len() {
@@ -811,6 +831,7 @@ impl ChainSettleContract {
             late_penalty_bps_per_ledger,
             auto_confirm_ledgers,
             open_dispute_count: 0,
+            dispute_bond_amount,
         };
 
         Self::append_audit_entry(
@@ -1399,7 +1420,8 @@ impl ChainSettleContract {
             .get(&DataKey::MaxConcurrentDisputes)
             .unwrap_or(1u32);
         if shipment.open_dispute_count >= max_open {
-                panic!("DisputeAlreadyOpen");
+            panic!("DisputeAlreadyOpen");
+        }
 
         shipment.open_dispute_count += 1;
         // Cancel any holdback window.
@@ -1489,10 +1511,28 @@ impl ChainSettleContract {
                 &shipment.supplier,
                 &net_payment,
             );
+            // Dispute approved: return the bond unit to the buyer.
+            if shipment.dispute_bond_amount > 0 {
+                let primary_buyer = shipment.buyers.get(0).unwrap();
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &primary_buyer,
+                    &shipment.dispute_bond_amount,
+                );
+            }
             milestone.status = MilestoneStatus::Resolved;
         } else {
             milestone.status = MilestoneStatus::Pending;
             milestone.proof_hash = String::from_str(&env, "");
+            // Dispute rejected: forfeit the bond unit to the supplier.
+            if shipment.dispute_bond_amount > 0 {
+                let token_client = token::Client::new(&env, &shipment.token);
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &shipment.supplier,
+                    &shipment.dispute_bond_amount,
+                );
+            }
         }
 
         shipment.milestones.set(milestone_index, milestone);
@@ -2162,6 +2202,117 @@ impl ChainSettleContract {
         env.events().publish(
             (Symbol::new(&env, "auto_confirmation_claimed"), shipment_id.clone()),
             (milestone_index, payment, fee_amount, penalty_deducted),
+        );
+    }
+
+    // ----------------------------------------------------------
+    // ADMIN: TWO-STEP ROLE TRANSFER (Issue #40)
+    // ----------------------------------------------------------
+
+    /// Nominate a new admin. The nominee must call accept_admin to complete the transfer.
+    /// The current admin remains active until the nominee accepts.
+    pub fn nominate_admin(env: Env, current_admin: Address, nominee: Address) {
+        current_admin.require_auth();
+        Self::assert_admin(&env, &current_admin);
+        env.storage().instance().set(&DataKey::PendingAdmin, &nominee);
+        env.events().publish(
+            (Symbol::new(&env, "admin_nominated"),),
+            nominee,
+        );
+    }
+
+    /// Accept an outstanding admin nomination. Only the nominated address may call this.
+    /// On success, the caller becomes the new admin and the nomination is cleared.
+    pub fn accept_admin(env: Env, nominee: Address) {
+        nominee.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic!("no pending nomination"));
+        if nominee != pending {
+            panic!("unauthorized");
+        }
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic!("unauthorized"));
+        env.storage().instance().set(&DataKey::Admin, &nominee);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events().publish(
+            (Symbol::new(&env, "admin_transferred"),),
+            (old_admin, nominee),
+        );
+    }
+
+    /// Cancel the outstanding admin nomination. Only the current admin may call this.
+    pub fn revoke_nomination(env: Env, current_admin: Address) {
+        current_admin.require_auth();
+        Self::assert_admin(&env, &current_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.events().publish(
+            (Symbol::new(&env, "nomination_revoked"),),
+            env.ledger().sequence(),
+        );
+    }
+
+    // ----------------------------------------------------------
+    // EMERGENCY FUND RECOVERY (Issue #47)
+    // ----------------------------------------------------------
+
+    /// Recover stuck escrow funds from an abandoned shipment.
+    /// Only callable after RECOVERY_THRESHOLD_LEDGERS have elapsed since creation.
+    /// Transfers remaining funds to the admin address and marks the shipment Cancelled.
+    pub fn emergency_recover(env: Env, admin: Address, shipment_id: String) {
+        Self::assert_not_paused(&env);
+        admin.require_auth();
+        Self::assert_admin(&env, &admin);
+
+        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+
+        if shipment.status != ShipmentStatus::Active {
+            panic!("shipment is not active");
+        }
+
+        let current_ledger = env.ledger().sequence();
+        if current_ledger <= shipment.created_at + RECOVERY_THRESHOLD_LEDGERS {
+            panic!("recovery threshold not reached");
+        }
+
+        let recovery_amount = shipment.total_amount - shipment.released_amount;
+
+        if recovery_amount > 0 {
+            let token_client = token::Client::new(&env, &shipment.token);
+            token_client.transfer(&env.current_contract_address(), &admin, &recovery_amount);
+        }
+
+        Self::move_shipment_status_index(
+            &env,
+            ShipmentStatus::Active,
+            ShipmentStatus::Cancelled,
+            &shipment_id,
+        );
+        shipment.status = ShipmentStatus::Cancelled;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
+
+        // Decrement total escrowed value.
+        let current_escrowed: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TotalEscrowed(shipment.token.clone()))
+            .unwrap_or(0);
+        env.storage().persistent().set(
+            &DataKey::TotalEscrowed(shipment.token.clone()),
+            &(current_escrowed - recovery_amount).max(0),
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "emergency_recovery"), shipment_id.clone()),
+            (recovery_amount, admin),
         );
     }
 
