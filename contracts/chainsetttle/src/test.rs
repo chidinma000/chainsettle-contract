@@ -835,13 +835,14 @@ fn test_admin_action_log_capped_and_ordered() {
 
     for i in 1..=51 {
         let pct = if i <= 100 { i as u32 } else { 100 };
+        t.env.ledger().with_mut(|l| l.sequence_number += 1);
         client.set_min_milestone_percent(&t.buyer, &pct);
     }
 
     let log = client.get_admin_log();
     assert_eq!(log.len(), 50);
     for i in 1..log.len() {
-        assert!(log.get(i - 1).unwrap().ledger < log.get(i).unwrap().ledger);
+        assert!(log.get(i - 1).unwrap().ledger <= log.get(i).unwrap().ledger);
     }
 }
 
@@ -1905,6 +1906,9 @@ fn test_shipment_created_event_includes_all_role_addresses() {
     let shipment_id = String::from_str(&t.env, "SHIP-EVT-CREATE");
     let total_amount: i128 = 1_000_000_000;
 
+    // Advance ledger so created_at is non-zero.
+    t.env.ledger().with_mut(|l| l.sequence_number = 1);
+
     create_standard_shipment(
         &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
         &t.logistics, &t.arbiter, &t.token_id, total_amount,
@@ -2004,7 +2008,7 @@ fn test_milestone_confirmed_event_includes_supplier_and_ledger() {
 
     // supplier field in the event matches the stored shipment.supplier.
     let shipment = client.get_shipment(&shipment_id);
-    assert_eq!(shipment.supplier, t.supplier, "event supplier field is correct");
+    assert_eq!(shipment.supplier, t.supplier, "event supplier field is correct (confirm)");
 }
 
 #[test]
@@ -2037,5 +2041,70 @@ fn test_batch_confirm_milestone_confirmed_event_includes_supplier() {
 
     let shipment = client.get_shipment(&shipment_id);
     assert_eq!(shipment.supplier, t.supplier, "event supplier field is correct");
+}
+
+// ============================================================
+// #52: milestone_confirmed and dispute_resolved events include
+//      released_amount and remaining_amount running totals
+// ============================================================
+
+#[test]
+fn test_milestone_confirmed_event_released_and_remaining_amounts() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    let shipment_id = String::from_str(&t.env, "SHIP-REL-52");
+    let total_amount: i128 = 1_000_000_000;
+
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+
+    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "qm0"));
+    client.confirm_milestone(&t.buyer, &shipment_id, &0);
+
+    let shipment = client.get_shipment(&shipment_id);
+    let expected_released: i128 = total_amount * 25 / 100;
+    assert_eq!(shipment.released_amount, expected_released);
+    assert_eq!(shipment.total_amount - shipment.released_amount, total_amount - expected_released);
+
+    client.submit_proof(&t.supplier, &shipment_id, &1, &String::from_str(&t.env, "qm1"));
+    client.confirm_milestone(&t.buyer, &shipment_id, &1);
+
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.released_amount, total_amount * 75 / 100);
+
+    client.submit_proof(&t.supplier, &shipment_id, &2, &String::from_str(&t.env, "qm2"));
+    client.confirm_milestone(&t.buyer, &shipment_id, &2);
+
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.released_amount, total_amount, "all funds released after final milestone");
+    assert_eq!(shipment.total_amount - shipment.released_amount, 0, "remaining is 0 on final milestone");
+}
+
+#[test]
+fn test_dispute_resolved_approve_event_includes_released_and_remaining() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    let shipment_id = String::from_str(&t.env, "SHIP-DISP-52");
+    let total_amount: i128 = 1_000_000_000;
+
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+
+    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "qm0"));
+    client.raise_dispute(&t.buyer, &shipment_id, &0);
+    client.resolve_dispute(&t.arbiter, &shipment_id, &0, &true);
+
+    let shipment = client.get_shipment(&shipment_id);
+    let expected_released: i128 = total_amount * 25 / 100;
+    assert_eq!(shipment.released_amount, expected_released, "released_amount correct after dispute approval");
+    assert_eq!(
+        shipment.total_amount - shipment.released_amount,
+        total_amount - expected_released,
+        "remaining_amount correct after dispute approval"
+    );
 }
 

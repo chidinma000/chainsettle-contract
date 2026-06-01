@@ -625,7 +625,7 @@ impl ChainSettleContract {
     pub fn is_blacklisted(env: Env, address: Address) -> bool {
         env.storage()
             .instance()
-            .get(&DataKey::Blacklisted(address))
+            .get::<DataKey, BytesN<32>>(&DataKey::Blacklisted(address))
             .is_some()
     }
 
@@ -750,14 +750,14 @@ impl ChainSettleContract {
             if env
                 .storage()
                 .instance()
-                .get(&DataKey::Blacklisted(buyers.get(i).unwrap().clone()))
+                .get::<DataKey, BytesN<32>>(&DataKey::Blacklisted(buyers.get(i).unwrap().clone()))
                 .is_some()
             {
                 panic!("unauthorized");
             }
         }
         for addr in [supplier.clone(), logistics.clone(), arbiter.clone()] {
-            if env.storage().instance().get(&DataKey::Blacklisted(addr)).is_some() {
+            if env.storage().instance().get::<DataKey, BytesN<32>>(&DataKey::Blacklisted(addr)).is_some() {
                 panic!("unauthorized");
             }
         }
@@ -1183,9 +1183,10 @@ impl ChainSettleContract {
                 .persistent()
                 .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
 
+            let remaining_amount = shipment.total_amount - shipment.released_amount;
             env.events().publish(
                 (Symbol::new(&env, "milestone_confirmed"), shipment_id.clone()),
-                (milestone_index, payment, fee_amount, penalty_deducted, shipment.supplier.clone(), env.ledger().sequence()),
+                (milestone_index, payment, fee_amount, penalty_deducted, shipment.supplier.clone(), env.ledger().sequence(), shipment.released_amount, remaining_amount),
             );
         }
     }
@@ -1344,9 +1345,10 @@ impl ChainSettleContract {
                 &(current_escrowed - payment).max(0),
             );
 
+            let remaining_amount = shipment.total_amount - shipment.released_amount;
             env.events().publish(
                 (Symbol::new(&env, "milestone_confirmed"), shipment_id.clone()),
-                (idx, payment, fee_amount, shipment.supplier.clone(), env.ledger().sequence()),
+                (idx, payment, fee_amount, shipment.supplier.clone(), env.ledger().sequence(), shipment.released_amount, remaining_amount),
             );
         }
 
@@ -1589,9 +1591,11 @@ impl ChainSettleContract {
             .persistent()
             .set(&DataKey::ActiveDisputes, &new_disputes);
 
+        let released_amount = shipment.released_amount;
+        let remaining_amount = shipment.total_amount - released_amount;
         env.events().publish(
             (Symbol::new(&env, "dispute_resolved"), shipment_id.clone()),
-            (milestone_index, approve),
+            (milestone_index, approve, released_amount, remaining_amount),
         );
     }
 
