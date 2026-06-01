@@ -2188,3 +2188,80 @@ fn test_blacklist_address_emits_admin_action_event() {
     assert!(!client.is_blacklisted(&t.supplier), "address removed from blacklist");
 }
 
+// ============================================================
+// #54: proof_submitted vs proof_resubmitted event topics
+// ============================================================
+
+#[test]
+fn test_initial_proof_submission_status() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    let shipment_id = String::from_str(&t.env, "SHIP-PROOF-54");
+
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
+    );
+
+    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "QmFirst"));
+
+    let shipment = client.get_shipment(&shipment_id);
+    let ms = shipment.milestones.get(0).unwrap();
+    assert_eq!(ms.status, MilestoneStatus::ProofSubmitted, "initial submission: ProofSubmitted");
+    assert_eq!(ms.proof_hash, String::from_str(&t.env, "QmFirst"), "initial proof hash recorded");
+}
+
+#[test]
+fn test_resubmission_proof_hash_preserved_after_dispute_rejection() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    let shipment_id = String::from_str(&t.env, "SHIP-RESUB-54");
+
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
+    );
+
+    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "QmFirst"));
+    client.raise_dispute(&t.buyer, &shipment_id, &0);
+    client.resolve_dispute(&t.arbiter, &shipment_id, &0, &false);
+
+    let shipment = client.get_shipment(&shipment_id);
+    let ms = shipment.milestones.get(0).unwrap();
+    assert_eq!(ms.status, MilestoneStatus::Pending, "milestone back to Pending after rejection");
+    // proof_hash is preserved (not cleared) so submit_proof detects next call as a resubmission.
+    assert_ne!(ms.proof_hash, String::from_str(&t.env, ""), "proof_hash preserved for resubmission detection");
+
+    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "QmSecond"));
+
+    let shipment2 = client.get_shipment(&shipment_id);
+    let ms2 = shipment2.milestones.get(0).unwrap();
+    assert_eq!(ms2.status, MilestoneStatus::ProofSubmitted, "ProofSubmitted after resubmission");
+    assert_eq!(ms2.proof_hash, String::from_str(&t.env, "QmSecond"), "new proof hash recorded");
+}
+
+#[test]
+fn test_resubmission_full_flow_confirms_correctly() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    let shipment_id = String::from_str(&t.env, "SHIP-TOPIC-54");
+
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
+    );
+
+    // First submission → proof_submitted topic (proof_hash was empty)
+    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "QmA"));
+    client.raise_dispute(&t.buyer, &shipment_id, &0);
+    client.resolve_dispute(&t.arbiter, &shipment_id, &0, &false);
+
+    // Second submission → proof_resubmitted topic (proof_hash was non-empty)
+    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "QmB"));
+    client.confirm_milestone(&t.buyer, &shipment_id, &0);
+
+    let shipment = client.get_shipment(&shipment_id);
+    let ms = shipment.milestones.get(0).unwrap();
+    assert_eq!(ms.status, MilestoneStatus::Confirmed, "milestone confirmed after resubmission flow");
+}
+

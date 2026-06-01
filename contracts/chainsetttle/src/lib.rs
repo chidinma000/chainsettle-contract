@@ -1032,6 +1032,8 @@ impl ChainSettleContract {
         }
 
         let current_ledger = env.ledger().sequence();
+        let is_resubmission = milestone.proof_hash.len() > 0;
+        let proof_hash_for_event = proof_hash.clone();
         milestone.proof_hash = proof_hash;
         milestone.status = MilestoneStatus::ProofSubmitted;
         milestone.proof_submitted_ledger = Some(current_ledger);
@@ -1047,9 +1049,14 @@ impl ChainSettleContract {
             &current_ledger,
         );
 
+        let event_topic = if is_resubmission {
+            Symbol::new(&env, "proof_resubmitted")
+        } else {
+            Symbol::new(&env, "proof_submitted")
+        };
         env.events().publish(
-            (Symbol::new(&env, "proof_submitted"), shipment_id.clone()),
-            milestone_index,
+            (event_topic, shipment_id.clone()),
+            (milestone_index, proof_hash_for_event, caller, current_ledger),
         );
     }
 
@@ -1533,7 +1540,7 @@ impl ChainSettleContract {
             milestone.status = MilestoneStatus::Resolved;
         } else {
             milestone.status = MilestoneStatus::Pending;
-            milestone.proof_hash = String::from_str(&env, "");
+            // proof_hash is preserved so submit_proof can detect this as a resubmission.
             // Dispute rejected: forfeit the bond unit to the supplier.
             if shipment.dispute_bond_amount > 0 {
                 let token_client = token::Client::new(&env, &shipment.token);
