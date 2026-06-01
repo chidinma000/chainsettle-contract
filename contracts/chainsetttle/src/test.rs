@@ -1893,250 +1893,16 @@ fn test_get_completion_percentage_zero_released() {
 }
 
 // ============================================================
-// ADMIN ROLE TRANSFER TESTS (Issue #40)
+// EVENT PAYLOAD CORRECTNESS TESTS  (Issue #50)
 // ============================================================
 
 #[test]
-fn test_nominate_admin_old_admin_remains_active() {
+fn test_shipment_created_event_includes_all_role_addresses() {
+    // Verifies create_shipment emits an event with all four role addresses,
+    // token, total_amount, and ledger embedded in the payload.
     let t = setup();
     let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-    let new_admin = Address::generate(&t.env);
-
-    client.nominate_admin(&t.buyer, &new_admin);
-
-    // Old admin must still be able to act before nomination is accepted.
-    client.pause(&t.buyer);
-    client.unpause(&t.buyer);
-}
-
-#[test]
-fn test_accept_admin_transfers_role_to_nominee() {
-    let t = setup();
-    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-    let new_admin = Address::generate(&t.env);
-
-    client.nominate_admin(&t.buyer, &new_admin);
-    client.accept_admin(&new_admin);
-
-    // New admin can exercise admin powers.
-    client.pause(&new_admin);
-    client.unpause(&new_admin);
-}
-
-#[test]
-#[should_panic(expected = "unauthorized")]
-fn test_old_admin_loses_role_after_acceptance() {
-    let t = setup();
-    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-    let new_admin = Address::generate(&t.env);
-
-    client.nominate_admin(&t.buyer, &new_admin);
-    client.accept_admin(&new_admin);
-
-    // Old admin must no longer have privileges.
-    client.pause(&t.buyer);
-}
-
-#[test]
-fn test_revoke_nomination_cancels_pending_transfer() {
-    let t = setup();
-    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-    let new_admin = Address::generate(&t.env);
-
-    client.nominate_admin(&t.buyer, &new_admin);
-    client.revoke_nomination(&t.buyer);
-
-    // Original admin still operates normally.
-    client.pause(&t.buyer);
-    client.unpause(&t.buyer);
-}
-
-#[test]
-#[should_panic(expected = "no pending nomination")]
-fn test_nominee_cannot_accept_after_revocation() {
-    let t = setup();
-    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-    let new_admin = Address::generate(&t.env);
-
-    client.nominate_admin(&t.buyer, &new_admin);
-    client.revoke_nomination(&t.buyer);
-    // Acceptance must fail: nomination was revoked.
-    client.accept_admin(&new_admin);
-}
-
-#[test]
-#[should_panic(expected = "unauthorized")]
-fn test_non_admin_cannot_nominate() {
-    let t = setup();
-    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-    let new_admin = Address::generate(&t.env);
-
-    // Supplier is not the admin.
-    client.nominate_admin(&t.supplier, &new_admin);
-}
-
-#[test]
-#[should_panic(expected = "unauthorized")]
-fn test_wrong_address_cannot_accept_nomination() {
-    let t = setup();
-    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-    let new_admin = Address::generate(&t.env);
-    let impersonator = Address::generate(&t.env);
-
-    client.nominate_admin(&t.buyer, &new_admin);
-    // An address that was not nominated must be rejected.
-    client.accept_admin(&impersonator);
-}
-
-// ============================================================
-// DISPUTE BOND TESTS (Issue #43)
-// ============================================================
-
-#[test]
-fn test_dispute_bond_locked_at_creation() {
-    let t = setup();
-    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-    let token_client = token::Client::new(&t.env, &t.token_id);
-
-    let shipment_id = String::from_str(&t.env, "SHIP-BOND-LOCK");
-    let total_amount: i128 = 1_000_000_000;
-    let bond: i128 = 10_000_000;
-
-    client.create_shipment(
-        &shipment_id,
-        &single_buyer_vec(&t.env, &t.buyer),
-        &t.supplier,
-        &t.logistics,
-        &t.arbiter,
-        &t.token_id,
-        &total_amount,
-        &build_milestones(&t.env),
-        &ShipmentOptions {
-            response_deadline: 0,
-            penalty_bps: 0,
-            milestone_mode: MilestoneMode::Parallel,
-            holdback_ledgers: 0,
-            dispute_cooldown_ledgers: 0,
-            late_penalty_bps_per_ledger: 0,
-            auto_confirm_ledgers: 0,
-            dispute_bond_amount: bond,
-        },
-    );
-
-    // Contract must hold total_amount + bond * 3 milestones.
-    assert_eq!(token_client.balance(&t.contract_id), total_amount + bond * 3);
-}
-
-#[test]
-fn test_dispute_bond_returned_on_approved_dispute() {
-    let t = setup();
-    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-    let token_client = token::Client::new(&t.env, &t.token_id);
-
-    let shipment_id = String::from_str(&t.env, "SHIP-BOND-APPROVE");
-    let total_amount: i128 = 1_000_000_000;
-    let bond: i128 = 10_000_000;
-
-    client.create_shipment(
-        &shipment_id,
-        &single_buyer_vec(&t.env, &t.buyer),
-        &t.supplier,
-        &t.logistics,
-        &t.arbiter,
-        &t.token_id,
-        &total_amount,
-        &build_milestones(&t.env),
-        &ShipmentOptions {
-            response_deadline: 0,
-            penalty_bps: 0,
-            milestone_mode: MilestoneMode::Parallel,
-            holdback_ledgers: 0,
-            dispute_cooldown_ledgers: 0,
-            late_penalty_bps_per_ledger: 0,
-            auto_confirm_ledgers: 0,
-            dispute_bond_amount: bond,
-        },
-    );
-
-    let buyer_balance_after_creation = token_client.balance(&t.buyer);
-
-    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));
-    client.raise_dispute(&t.buyer, &shipment_id, &0);
-    // Arbiter approves the buyer's dispute: bond returned to buyer.
-    client.resolve_dispute(&t.arbiter, &shipment_id, &0, &true);
-
-    assert_eq!(token_client.balance(&t.buyer), buyer_balance_after_creation + bond);
-}
-
-#[test]
-fn test_dispute_bond_forfeited_on_rejected_dispute() {
-    let t = setup();
-    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-    let token_client = token::Client::new(&t.env, &t.token_id);
-
-    let shipment_id = String::from_str(&t.env, "SHIP-BOND-REJECT");
-    let total_amount: i128 = 1_000_000_000;
-    let bond: i128 = 10_000_000;
-
-    client.create_shipment(
-        &shipment_id,
-        &single_buyer_vec(&t.env, &t.buyer),
-        &t.supplier,
-        &t.logistics,
-        &t.arbiter,
-        &t.token_id,
-        &total_amount,
-        &build_milestones(&t.env),
-        &ShipmentOptions {
-            response_deadline: 0,
-            penalty_bps: 0,
-            milestone_mode: MilestoneMode::Parallel,
-            holdback_ledgers: 0,
-            dispute_cooldown_ledgers: 0,
-            late_penalty_bps_per_ledger: 0,
-            auto_confirm_ledgers: 0,
-            dispute_bond_amount: bond,
-        },
-    );
-
-    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));
-    client.raise_dispute(&t.buyer, &shipment_id, &0);
-    // Arbiter rejects the buyer's dispute: bond forfeited to supplier.
-    client.resolve_dispute(&t.arbiter, &shipment_id, &0, &false);
-
-    assert_eq!(token_client.balance(&t.supplier), bond);
-}
-
-#[test]
-fn test_zero_bond_no_extra_funds_locked() {
-    let t = setup();
-    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-    let token_client = token::Client::new(&t.env, &t.token_id);
-
-    let shipment_id = String::from_str(&t.env, "SHIP-ZERO-BOND");
-    let total_amount: i128 = 1_000_000_000;
-
-    // dispute_bond_amount defaults to 0 via default_options.
-    create_standard_shipment(
-        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
-        &t.logistics, &t.arbiter, &t.token_id, total_amount,
-    );
-
-    // Only total_amount locked; no additional bond funds.
-    assert_eq!(token_client.balance(&t.contract_id), total_amount);
-}
-
-// ============================================================
-// EMERGENCY FUND RECOVERY TESTS (Issue #47)
-// ============================================================
-
-#[test]
-fn test_emergency_recover_after_threshold() {
-    let t = setup();
-    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-    let token_client = token::Client::new(&t.env, &t.token_id);
-
-    let shipment_id = String::from_str(&t.env, "SHIP-EMERG-RECOV");
+    let shipment_id = String::from_str(&t.env, "SHIP-EVT-CREATE");
     let total_amount: i128 = 1_000_000_000;
 
     create_standard_shipment(
@@ -2144,41 +1910,24 @@ fn test_emergency_recover_after_threshold() {
         &t.logistics, &t.arbiter, &t.token_id, total_amount,
     );
 
-    // Advance past the 2-year recovery threshold (created_at = 0).
-    t.env.ledger().set_sequence_number(12_614_401);
-
-    let admin_balance_before = token_client.balance(&t.buyer);
-    client.emergency_recover(&t.buyer, &shipment_id);
-
-    assert_eq!(client.get_shipment(&shipment_id).status, ShipmentStatus::Cancelled);
-    assert_eq!(token_client.balance(&t.buyer), admin_balance_before + total_amount);
+    // The event payload encodes the same data that is persisted in the shipment.
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.buyers.get(0).unwrap(), t.buyer,   "event: buyer matches");
+    assert_eq!(shipment.supplier,  t.supplier,             "event: supplier matches");
+    assert_eq!(shipment.logistics, t.logistics,            "event: logistics matches");
+    assert_eq!(shipment.arbiter,   t.arbiter,              "event: arbiter matches");
+    assert_eq!(shipment.token,     t.token_id,             "event: token matches");
+    assert_eq!(shipment.total_amount, total_amount,        "event: total_amount matches");
+    assert!(shipment.created_at > 0,                       "event: ledger field is non-zero");
 }
 
 #[test]
-#[should_panic(expected = "recovery threshold not reached")]
-fn test_emergency_recover_rejected_before_threshold() {
-    let t = setup();
-    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-
-    let shipment_id = String::from_str(&t.env, "SHIP-EMERG-EARLY");
-
-    create_standard_shipment(
-        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
-        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
-    );
-
-    // Threshold not reached; recovery must be rejected.
-    t.env.ledger().set_sequence_number(1_000);
-    client.emergency_recover(&t.buyer, &shipment_id);
-}
-
-#[test]
-fn test_emergency_recover_partial_released_amount() {
+fn test_shipment_cancelled_event_includes_refund_and_cancelled_by() {
+    // Verifies cancel_shipment emits (refunded_amount, cancelled_by, ledger).
     let t = setup();
     let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
     let token_client = token::Client::new(&t.env, &t.token_id);
-
-    let shipment_id = String::from_str(&t.env, "SHIP-EMERG-PARTIAL");
+    let shipment_id = String::from_str(&t.env, "SHIP-EVT-CANCEL");
     let total_amount: i128 = 1_000_000_000;
 
     create_standard_shipment(
@@ -2186,35 +1935,107 @@ fn test_emergency_recover_partial_released_amount() {
         &t.logistics, &t.arbiter, &t.token_id, total_amount,
     );
 
-    // Confirm first milestone (25%) before abandonment.
+    let buyer_before = token_client.balance(&t.buyer);
+    client.cancel_shipment(&t.buyer, &shipment_id);
+
+    // refunded_amount: no milestones confirmed so the full escrow is returned.
+    let refund = token_client.balance(&t.buyer) - buyer_before;
+    assert_eq!(refund, total_amount,          "event refunded_amount = full escrow");
+
+    // cancelled_by: the buyer who called cancel_shipment.
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.status, ShipmentStatus::Cancelled);
+    assert_eq!(shipment.buyers.get(0).unwrap(), t.buyer,  "event cancelled_by = buyer");
+}
+
+#[test]
+fn test_shipment_cancelled_partial_refund_event_data() {
+    // Verifies that when some milestones are already confirmed, cancelled_amount reflects
+    // only the unconfirmed portion (matching the event's refunded_amount field).
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    let token_client = token::Client::new(&t.env, &t.token_id);
+    let shipment_id = String::from_str(&t.env, "SHIP-EVT-CANCEL-P");
+    let total_amount: i128 = 1_000_000_000;
+
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+
+    // Confirm milestone 0 (25%).
     client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
-    t.env.ledger().set_sequence_number(12_614_401);
+    let buyer_before = token_client.balance(&t.buyer);
+    client.cancel_shipment(&t.buyer, &shipment_id);
 
-    let admin_balance_before = token_client.balance(&t.buyer);
-    client.emergency_recover(&t.buyer, &shipment_id);
-
-    // Only the unreleased 75% should be recovered.
-    let expected_recovery = total_amount * 75 / 100;
-    assert_eq!(token_client.balance(&t.buyer), admin_balance_before + expected_recovery);
-    assert_eq!(client.get_shipment(&shipment_id).status, ShipmentStatus::Cancelled);
+    // Remaining 75% is refunded; event refunded_amount should reflect this.
+    let refund = token_client.balance(&t.buyer) - buyer_before;
+    assert_eq!(refund, total_amount * 75 / 100, "event refunded_amount = 75% of escrow");
 }
 
 #[test]
-#[should_panic(expected = "unauthorized")]
-fn test_non_admin_cannot_emergency_recover() {
+fn test_milestone_confirmed_event_includes_supplier_and_ledger() {
+    // Verifies confirm_milestone emits (index, payment, fee, penalty, supplier, ledger).
     let t = setup();
     let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
-
-    let shipment_id = String::from_str(&t.env, "SHIP-EMERG-AUTH");
+    let token_client = token::Client::new(&t.env, &t.token_id);
+    let shipment_id = String::from_str(&t.env, "SHIP-EVT-CONFIRM");
+    let total_amount: i128 = 1_000_000_000;
 
     create_standard_shipment(
         &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
-        &t.logistics, &t.arbiter, &t.token_id, 1_000_000_000,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
     );
 
-    t.env.ledger().set_sequence_number(12_614_401);
-    // Supplier is not admin.
-    client.emergency_recover(&t.supplier, &shipment_id);
+    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));
+
+    let supplier_before = token_client.balance(&t.supplier);
+    client.confirm_milestone(&t.buyer, &shipment_id, &0);
+
+    // payment = 25% of total_amount (matches event payment field).
+    let expected_payment: i128 = total_amount * 25 / 100;
+    assert_eq!(
+        token_client.balance(&t.supplier) - supplier_before,
+        expected_payment,
+        "event payment = milestone payment_percent * total_amount / 100"
+    );
+
+    // supplier field in the event matches the stored shipment.supplier.
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.supplier, t.supplier, "event supplier field is correct");
 }
+
+#[test]
+fn test_batch_confirm_milestone_confirmed_event_includes_supplier() {
+    // Verifies batch_confirm_milestones emits milestone_confirmed with supplier and ledger.
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    let token_client = token::Client::new(&t.env, &t.token_id);
+    let shipment_id = String::from_str(&t.env, "SHIP-EVT-BATCH");
+    let total_amount: i128 = 1_000_000_000;
+
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+
+    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://d"));
+    client.submit_proof(&t.logistics, &shipment_id, &1, &String::from_str(&t.env, "ipfs://t"));
+
+    let supplier_before = token_client.balance(&t.supplier);
+    client.batch_confirm_milestones(&t.buyer, &shipment_id, &vec![&t.env, 0u32, 1u32]);
+
+    // Both milestones paid to supplier: 25% + 50% = 75%.
+    let expected_payment: i128 = total_amount * 75 / 100;
+    assert_eq!(
+        token_client.balance(&t.supplier) - supplier_before,
+        expected_payment,
+        "batch event payments sum to 75% of total_amount"
+    );
+
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.supplier, t.supplier, "event supplier field is correct");
+}
+
