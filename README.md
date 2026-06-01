@@ -419,6 +419,9 @@ stellar contract deploy \
 - **TTL / State Archival**: Persistent storage entries are given an extended TTL (~1 year) at creation. Long-lived shipments should call `extend_ttl` via the backend before entries archive.
 - **No upgradability (MVP)**: This scaffold has no upgrade mechanism. For production, consider implementing Soroban's `upgrade` pattern.
 
+For a detailed threat analysis and security model, see [docs/SECURITY.md](docs/SECURITY.md).
+
+
 ---
 
 ## Roadmap
