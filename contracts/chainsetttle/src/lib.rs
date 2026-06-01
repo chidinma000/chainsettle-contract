@@ -291,6 +291,16 @@ pub enum ChainSettleError {
     DisputeCooldownActive = 14,
     TransferDisallowed = 15,
     CircuitBreakerTripped = 16,
+    EmptyBuyersList = 17,
+    MaxShipmentValueExceeded = 18,
+    InvalidMultiSigParameters = 19,
+    MultisigNotConfigured = 20,
+    AlreadyApproved = 21,
+    InvalidMinMilestonePercent = 22,
+    TopUpNotAllowed = 23,
+    ProofNotSubmitted = 24,
+    AutoConfirmed = 25,
+    HoldbackNotExpired = 26,
 }
 
 // ============================================================
@@ -540,7 +550,7 @@ impl ChainSettleContract {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
-    fn execute_admin_action(env: &Env, action_id: &String, operation: Symbol, params: String) {
+    fn execute_admin_action(env: &Env, action_id: &String, operation: Symbol, _params: String) {
         env.events().publish(
             (Symbol::new(env, "admin_action_executed"), action_id.clone()),
             operation,
@@ -554,16 +564,17 @@ impl ChainSettleContract {
     // ----------------------------------------------------------
 
     /// Set or update the platform fee. Max 1000 bps (10%). Admin only.
-    pub fn set_fee_config(env: Env, admin: Address, fee_bps: u32, treasury: Address) {
+    pub fn set_fee_config(env: Env, admin: Address, fee_bps: u32, treasury: Address) -> Result<(), ChainSettleError> {
         admin.require_auth();
         Self::assert_admin(&env, &admin);
         if fee_bps > 1000 {
-            panic!("fee_bps exceeds maximum of 1000");
+            return Err(ChainSettleError::FeeTooHigh);
         }
         Self::append_admin_action(&env, Symbol::new(&env, "set_fee_config"), Symbol::new(&env, "fee_config_updated"));
         env.storage()
             .instance()
             .set(&DataKey::FeeConfig, &FeeConfig { fee_bps, treasury });
+        Ok(())
     }
 
     pub fn set_max_concurrent_disputes(env: Env, admin: Address, limit: u32) {
@@ -625,7 +636,7 @@ impl ChainSettleContract {
     pub fn is_blacklisted(env: Env, address: Address) -> bool {
         env.storage()
             .instance()
-            .get(&DataKey::Blacklisted(address))
+            .get::<DataKey, BytesN<32>>(&DataKey::Blacklisted(address))
             .is_some()
     }
 
@@ -750,14 +761,14 @@ impl ChainSettleContract {
             if env
                 .storage()
                 .instance()
-                .get(&DataKey::Blacklisted(buyers.get(i).unwrap().clone()))
+                .get::<DataKey, BytesN<32>>(&DataKey::Blacklisted(buyers.get(i).unwrap().clone()))
                 .is_some()
             {
                 panic!("unauthorized");
             }
         }
         for addr in [supplier.clone(), logistics.clone(), arbiter.clone()] {
-            if env.storage().instance().get(&DataKey::Blacklisted(addr)).is_some() {
+            if env.storage().instance().get::<DataKey, BytesN<32>>(&DataKey::Blacklisted(addr)).is_some() {
                 panic!("unauthorized");
             }
         }
@@ -2701,3 +2712,4 @@ impl ChainSettleContract {
 }
 
 mod test;
+mod benchmarks;

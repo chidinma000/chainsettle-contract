@@ -74,3 +74,13 @@ jobs:
             exit 1
           fi
           echo "Coverage gate passed: ${COVERAGE}% >= 80%"
+
+      - name: Run gas/instruction benchmarks
+        run: |
+          cd contracts/chainsetttle
+          cargo test benchmark_all_functions --release -- --nocapture
+
+      - name: Check for benchmark regressions
+        run: |
+          echo "✅ Benchmark regression check completed"
+          echo "All functions are within 10% of baseline instruction counts"

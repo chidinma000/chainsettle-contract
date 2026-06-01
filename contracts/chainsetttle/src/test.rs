@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+extern crate std;
+
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
@@ -2039,3 +2041,844 @@ fn test_batch_confirm_milestone_confirmed_event_includes_supplier() {
     assert_eq!(shipment.supplier, t.supplier, "event supplier field is correct");
 }
 
+
+// ============================================================
+// CONCURRENT/PARALLEL SHIPMENT STRESS TEST (Issue #57)
+// ============================================================
+
+#[test]
+fn test_concurrent_100_shipments_stress() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    let token_admin_client = token::StellarAssetClient::new(&t.env, &t.token_id);
+    let token_client = token::Client::new(&t.env, &t.token_id);
+
+    const NUM_SHIPMENTS: u32 = 100;
+    const AMOUNT_PER_SHIPMENT: i128 = 1_000_000;
+    const TOTAL_FUNDING_NEEDED: i128 = NUM_SHIPMENTS as i128 * AMOUNT_PER_SHIPMENT;
+
+    // Mint enough tokens for all shipments
+    token_admin_client.mint(&t.buyer, &TOTAL_FUNDING_NEEDED);
+
+    // Create 100 unique suppliers to track individual balances
+    let mut suppliers: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&t.env);
+    for _ in 0..NUM_SHIPMENTS {
+        suppliers.push_back(Address::generate(&t.env));
+    }
+
+    // Phase 1: Create 100 shipments with unique IDs
+    for i in 0..NUM_SHIPMENTS {
+        let shipment_id = String::from_str(&t.env, &format!("STRESS-{:03}", i));
+        let supplier = suppliers.get(i).unwrap();
+        
+        client.create_shipment(
+            &shipment_id,
+            &single_buyer_vec(&t.env, &t.buyer),
+            &supplier,
+            &t.logistics,
+            &t.arbiter,
+            &t.token_id,
+            &AMOUNT_PER_SHIPMENT,
+            &build_milestones(&t.env), // 3 milestones: 25%, 50%, 25%
+            &default_options(&t.env),
+        );
+    }
+
+    // Phase 2: Submit proofs in random/interleaved order
+    // We'll use a pseudo-random pattern: reverse order for milestone 0,
+    // forward order for milestone 1, alternating for milestone 2
+    
+    // Milestone 0: reverse order (99, 98, 97, ..., 0)
+    for i in (0..NUM_SHIPMENTS).rev() {
+        let shipment_id = String::from_str(&t.env, &format!("STRESS-{:03}", i));
+        let supplier = suppliers.get(i).unwrap();
+        client.submit_proof(&supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://proof0"));
+    }
+
+    // Milestone 1: forward order (0, 1, 2, ..., 99)
+    for i in 0..NUM_SHIPMENTS {
+        let shipment_id = String::from_str(&t.env, &format!("STRESS-{:03}", i));
+        client.submit_proof(&t.logistics, &shipment_id, &1, &String::from_str(&t.env, "ipfs://proof1"));
+    }
+
+    // Milestone 2: alternating order (0, 99, 1, 98, 2, 97, ...)
+    let mut indices: soroban_sdk::Vec<u32> = soroban_sdk::Vec::new(&t.env);
+    for i in 0..NUM_SHIPMENTS / 2 {
+        indices.push_back(i);
+        indices.push_back(NUM_SHIPMENTS - 1 - i);
+    }
+    for i in 0..indices.len() {
+        let idx = indices.get(i).unwrap();
+        let shipment_id = String::from_str(&t.env, &format!("STRESS-{:03}", idx));
+        let supplier = suppliers.get(idx).unwrap();
+        client.submit_proof(&supplier, &shipment_id, &2, &String::from_str(&t.env, "ipfs://proof2"));
+    }
+
+    // Phase 3: Confirm milestones in random/interleaved order
+    // Similar pattern: different order for each milestone
+    
+    // Confirm milestone 0: every 3rd shipment first, then fill gaps
+    for i in (0..NUM_SHIPMENTS).step_by(3) {
+        let shipment_id = String::from_str(&t.env, &format!("STRESS-{:03}", i));
+        client.confirm_milestone(&t.buyer, &shipment_id, &0);
+    }
+    for i in (1..NUM_SHIPMENTS).step_by(3) {
+        let shipment_id = String::from_str(&t.env, &format!("STRESS-{:03}", i));
+        client.confirm_milestone(&t.buyer, &shipment_id, &0);
+    }
+    for i in (2..NUM_SHIPMENTS).step_by(3) {
+        let shipment_id = String::from_str(&t.env, &format!("STRESS-{:03}", i));
+        client.confirm_milestone(&t.buyer, &shipment_id, &0);
+    }
+
+    // Confirm milestone 1: reverse order
+    for i in (0..NUM_SHIPMENTS).rev() {
+        let shipment_id = String::from_str(&t.env, &format!("STRESS-{:03}", i));
+        client.confirm_milestone(&t.buyer, &shipment_id, &1);
+    }
+
+    // Confirm milestone 2: forward order
+    for i in 0..NUM_SHIPMENTS {
+        let shipment_id = String::from_str(&t.env, &format!("STRESS-{:03}", i));
+        client.confirm_milestone(&t.buyer, &shipment_id, &2);
+    }
+
+    // Phase 4: Verify all shipments reached Completed status
+    let mut completed_count = 0;
+    for i in 0..NUM_SHIPMENTS {
+        let shipment_id = String::from_str(&t.env, &format!("STRESS-{:03}", i));
+        let shipment = client.get_shipment(&shipment_id);
+        
+        assert_eq!(
+            shipment.status,
+            ShipmentStatus::Completed,
+            "Shipment {} should be Completed",
+            i
+        );
+        
+        // Verify released_amount equals total_amount
+        assert_eq!(
+            shipment.released_amount,
+            shipment.total_amount,
+            "Shipment {} released_amount should equal total_amount",
+            i
+        );
+        
+        assert_eq!(
+            shipment.released_amount,
+            AMOUNT_PER_SHIPMENT,
+            "Shipment {} released_amount should be {}",
+            i,
+            AMOUNT_PER_SHIPMENT
+        );
+        
+        completed_count += 1;
+    }
+
+    assert_eq!(
+        completed_count,
+        NUM_SHIPMENTS,
+        "All {} shipments should be completed",
+        NUM_SHIPMENTS
+    );
+
+    // Phase 5: Verify supplier token balances match expected payments
+    for i in 0..NUM_SHIPMENTS {
+        let supplier = suppliers.get(i).unwrap();
+        let balance = token_client.balance(&supplier);
+        
+        // Each supplier should have received exactly AMOUNT_PER_SHIPMENT
+        // (25% + 50% + 25% = 100% of AMOUNT_PER_SHIPMENT)
+        assert_eq!(
+            balance,
+            AMOUNT_PER_SHIPMENT,
+            "Supplier {} balance should be {}",
+            i,
+            AMOUNT_PER_SHIPMENT
+        );
+    }
+
+    // Phase 6: Verify total token distribution
+    let total_supplier_balance: i128 = (0..NUM_SHIPMENTS)
+        .map(|i| token_client.balance(&suppliers.get(i).unwrap()))
+        .sum();
+
+    assert_eq!(
+        total_supplier_balance,
+        TOTAL_FUNDING_NEEDED,
+        "Total supplier balances should equal total funding"
+    );
+
+    // Verify contract escrow is empty (all funds released)
+    let contract_balance = token_client.balance(&t.contract_id);
+    assert_eq!(
+        contract_balance,
+        0,
+        "Contract should have zero balance after all shipments completed"
+    );
+
+    // Verify no escrow balance remains for any shipment
+    for i in 0..NUM_SHIPMENTS {
+        let shipment_id = String::from_str(&t.env, &format!("STRESS-{:03}", i));
+        let escrow_balance = client.get_escrow_balance(&shipment_id);
+        assert_eq!(
+            escrow_balance,
+            0,
+            "Shipment {} should have zero escrow balance",
+            i
+        );
+    }
+}
+
+#[test]
+fn test_concurrent_shipments_with_different_amounts() {
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    let token_admin_client = token::StellarAssetClient::new(&t.env, &t.token_id);
+    let token_client = token::Client::new(&t.env, &t.token_id);
+
+    const NUM_SHIPMENTS: u32 = 100;
+    
+    // Calculate total funding needed (sum of 1M, 2M, 3M, ..., 100M)
+    let total_funding: i128 = (1..=NUM_SHIPMENTS as i128)
+        .map(|i| i * 1_000_000)
+        .sum();
+    
+    token_admin_client.mint(&t.buyer, &total_funding);
+
+    // Create suppliers
+    let mut suppliers: soroban_sdk::Vec<Address> = soroban_sdk::Vec::new(&t.env);
+    for _ in 0..NUM_SHIPMENTS {
+        suppliers.push_back(Address::generate(&t.env));
+    }
+
+    // Create shipments with varying amounts
+    for i in 0..NUM_SHIPMENTS {
+        let shipment_id = String::from_str(&t.env, &format!("VAR-{:03}", i));
+        let supplier = suppliers.get(i).unwrap();
+        let amount = ((i + 1) as i128) * 1_000_000; // 1M, 2M, 3M, ..., 100M
+        
+        client.create_shipment(
+            &shipment_id,
+            &single_buyer_vec(&t.env, &t.buyer),
+            &supplier,
+            &t.logistics,
+            &t.arbiter,
+            &t.token_id,
+            &amount,
+            &build_milestones(&t.env),
+            &default_options(&t.env),
+        );
+    }
+
+    // Complete all shipments in interleaved order
+    for milestone_idx in 0..3u32 {
+        // Submit proofs
+        for i in 0..NUM_SHIPMENTS {
+            let shipment_id = String::from_str(&t.env, &format!("VAR-{:03}", i));
+            let supplier = suppliers.get(i).unwrap();
+            let proof = String::from_str(&t.env, &format!("ipfs://proof{}", milestone_idx));
+            
+            if milestone_idx == 1 {
+                client.submit_proof(&t.logistics, &shipment_id, &milestone_idx, &proof);
+            } else {
+                client.submit_proof(&supplier, &shipment_id, &milestone_idx, &proof);
+            }
+        }
+        
+        // Confirm milestones
+        for i in 0..NUM_SHIPMENTS {
+            let shipment_id = String::from_str(&t.env, &format!("VAR-{:03}", i));
+            client.confirm_milestone(&t.buyer, &shipment_id, &milestone_idx);
+        }
+    }
+
+    // Verify each shipment completed with correct amount
+    for i in 0..NUM_SHIPMENTS {
+        let shipment_id = String::from_str(&t.env, &format!("VAR-{:03}", i));
+        let shipment = client.get_shipment(&shipment_id);
+        let expected_amount = ((i + 1) as i128) * 1_000_000;
+        
+        assert_eq!(shipment.status, ShipmentStatus::Completed);
+        assert_eq!(shipment.released_amount, expected_amount);
+        
+        // Verify supplier received correct amount
+        let supplier = suppliers.get(i).unwrap();
+        let balance = token_client.balance(&supplier);
+        assert_eq!(balance, expected_amount);
+    }
+
+    // Verify total distribution
+    let total_distributed: i128 = (0..NUM_SHIPMENTS)
+        .map(|i| token_client.balance(&suppliers.get(i).unwrap()))
+        .sum();
+    
+    assert_eq!(total_distributed, total_funding);
+}
+
+#[test]
+fn test_concurrent_shipments_no_storage_clobbering() {
+    // This test specifically checks for global storage clobbering bugs
+    // by creating shipments with similar data but different IDs
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    let token_admin_client = token::StellarAssetClient::new(&t.env, &t.token_id);
+    let token_client = token::Client::new(&t.env, &t.token_id);
+
+    const NUM_SHIPMENTS: u32 = 100;
+    const AMOUNT: i128 = 1_000_000;
+    
+    token_admin_client.mint(&t.buyer, &(NUM_SHIPMENTS as i128 * AMOUNT));
+
+    // Use the same supplier for all shipments to test storage isolation
+    let shared_supplier = Address::generate(&t.env);
+
+    // Create all shipments
+    for i in 0..NUM_SHIPMENTS {
+        let shipment_id = String::from_str(&t.env, &format!("CLOB-{:03}", i));
+        
+        client.create_shipment(
+            &shipment_id,
+            &single_buyer_vec(&t.env, &t.buyer),
+            &shared_supplier,
+            &t.logistics,
+            &t.arbiter,
+            &t.token_id,
+            &AMOUNT,
+            &build_milestones(&t.env),
+            &default_options(&t.env),
+        );
+    }
+
+    // Submit proof for milestone 0 on all shipments
+    for i in 0..NUM_SHIPMENTS {
+        let shipment_id = String::from_str(&t.env, &format!("CLOB-{:03}", i));
+        client.submit_proof(&shared_supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://m0"));
+    }
+
+    // Verify each shipment has independent state
+    for i in 0..NUM_SHIPMENTS {
+        let shipment_id = String::from_str(&t.env, &format!("CLOB-{:03}", i));
+        let milestone = client.get_milestone(&shipment_id, &0);
+        
+        assert_eq!(
+            milestone.status,
+            MilestoneStatus::ProofSubmitted,
+            "Shipment {} milestone 0 should be ProofSubmitted",
+            i
+        );
+        
+        // Verify other milestones are still Pending
+        let m1 = client.get_milestone(&shipment_id, &1);
+        let m2 = client.get_milestone(&shipment_id, &2);
+        assert_eq!(m1.status, MilestoneStatus::Pending);
+        assert_eq!(m2.status, MilestoneStatus::Pending);
+    }
+
+    // Confirm milestone 0 on every other shipment
+    for i in (0..NUM_SHIPMENTS).step_by(2) {
+        let shipment_id = String::from_str(&t.env, &format!("CLOB-{:03}", i));
+        client.confirm_milestone(&t.buyer, &shipment_id, &0);
+    }
+
+    // Verify state divergence: even shipments confirmed, odd still have proof submitted
+    for i in 0..NUM_SHIPMENTS {
+        let shipment_id = String::from_str(&t.env, &format!("CLOB-{:03}", i));
+        let milestone = client.get_milestone(&shipment_id, &0);
+        
+        if i % 2 == 0 {
+            assert_eq!(
+                milestone.status,
+                MilestoneStatus::Confirmed,
+                "Even shipment {} milestone 0 should be Confirmed",
+                i
+            );
+        } else {
+            assert_eq!(
+                milestone.status,
+                MilestoneStatus::ProofSubmitted,
+                "Odd shipment {} milestone 0 should still be ProofSubmitted",
+                i
+            );
+        }
+    }
+
+    // Complete all shipments
+    for i in 0..NUM_SHIPMENTS {
+        let shipment_id = String::from_str(&t.env, &format!("CLOB-{:03}", i));
+        
+        // Confirm milestone 0 if not already confirmed
+        if i % 2 != 0 {
+            client.confirm_milestone(&t.buyer, &shipment_id, &0);
+        }
+        
+        // Complete remaining milestones
+        for m in 1..3u32 {
+            client.submit_proof(&t.logistics, &shipment_id, &m, &String::from_str(&t.env, &format!("ipfs://m{}", m)));
+            client.confirm_milestone(&t.buyer, &shipment_id, &m);
+        }
+    }
+
+    // Final verification: all completed, correct amounts
+    for i in 0..NUM_SHIPMENTS {
+        let shipment_id = String::from_str(&t.env, &format!("CLOB-{:03}", i));
+        let shipment = client.get_shipment(&shipment_id);
+        
+        assert_eq!(shipment.status, ShipmentStatus::Completed);
+        assert_eq!(shipment.released_amount, AMOUNT);
+    }
+
+    // Verify shared supplier received all payments
+    let supplier_balance = token_client.balance(&shared_supplier);
+    assert_eq!(supplier_balance, NUM_SHIPMENTS as i128 * AMOUNT);
+}
+
+// ============================================================
+// TTL EXPIRY SIMULATION TESTS (Issue #58)
+// ============================================================
+
+/// TTL (Time To Live) constants used in production code.
+/// These values determine how long data persists in Soroban storage before archival.
+///
+/// TTL_INITIAL_LEDGERS: 100,000 ledgers (~5.8 days at 5s/ledger)
+/// - Initial TTL set when data is first written
+/// - Minimum threshold for extend_ttl calls
+///
+/// TTL_MAX_LEDGERS: 6,300,000 ledgers (~1 year at 5s/ledger)
+/// - Maximum TTL that can be set
+/// - Upper bound for extend_ttl calls
+///
+/// Storage behavior:
+/// - Data is accessible while current_ledger < (last_extended_ledger + TTL)
+/// - After TTL expires, data is archived and requires restoration
+/// - extend_ttl() resets the expiry window from current ledger
+
+#[test]
+fn test_ttl_shipment_accessible_within_window() {
+    // Test that shipment data remains accessible within the TTL window
+    // Expected TTL: 100,000 ledgers (~5.8 days)
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    
+    let shipment_id = String::from_str(&t.env, "TTL-WITHIN");
+    let total_amount: i128 = 1_000_000_000;
+    
+    // Create shipment at ledger 1000
+    t.env.ledger().set_sequence_number(1000);
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+    
+    // Verify accessible immediately after creation
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.status, ShipmentStatus::Active);
+    assert_eq!(shipment.total_amount, total_amount);
+    
+    // Advance to ledger 50,000 (well within TTL_INITIAL_LEDGERS of 100,000)
+    t.env.ledger().set_sequence_number(50_000);
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.status, ShipmentStatus::Active);
+    
+    // Advance to ledger 99,999 (just before TTL expiry)
+    t.env.ledger().set_sequence_number(99_999);
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.status, ShipmentStatus::Active);
+    assert_eq!(shipment.id, shipment_id);
+}
+
+#[test]
+#[should_panic(expected = "ShipmentNotFound")]
+fn test_ttl_shipment_expires_after_window() {
+    // Test that shipment data becomes inaccessible after TTL expiry
+    // TTL_INITIAL_LEDGERS = 100,000 ledgers
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    
+    let shipment_id = String::from_str(&t.env, "TTL-EXPIRED");
+    let total_amount: i128 = 1_000_000_000;
+    
+    // Create shipment at ledger 1000
+    t.env.ledger().set_sequence_number(1000);
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+    
+    // Advance past TTL expiry: 1000 + 100,000 + 1 = 101,001
+    t.env.ledger().set_sequence_number(101_001);
+    
+    // This should panic with ShipmentNotFound as data is archived
+    client.get_shipment(&shipment_id);
+}
+
+#[test]
+fn test_ttl_extend_on_update() {
+    // Test that updating shipment data extends TTL
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    
+    let shipment_id = String::from_str(&t.env, "TTL-EXTEND");
+    let total_amount: i128 = 1_000_000_000;
+    
+    // Create shipment at ledger 1000
+    t.env.ledger().set_sequence_number(1000);
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+    
+    // Advance to ledger 90,000 (near expiry)
+    t.env.ledger().set_sequence_number(90_000);
+    
+    // Update shipment by submitting proof (this extends TTL)
+    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://proof"));
+    
+    // Advance past original TTL (1000 + 100,000 = 101,000)
+    t.env.ledger().set_sequence_number(101_500);
+    
+    // Should still be accessible because submit_proof extended TTL from ledger 90,000
+    // New expiry: 90,000 + 100,000 = 190,000
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.status, ShipmentStatus::Active);
+    
+    // Verify milestone was updated
+    let milestone = client.get_milestone(&shipment_id, &0);
+    assert_eq!(milestone.status, MilestoneStatus::ProofSubmitted);
+}
+
+#[test]
+fn test_ttl_multiple_extends() {
+    // Test that multiple operations continue extending TTL
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    
+    let shipment_id = String::from_str(&t.env, "TTL-MULTI");
+    let total_amount: i128 = 1_000_000_000;
+    
+    // Create at ledger 1000
+    t.env.ledger().set_sequence_number(1000);
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+    
+    // First extend at ledger 80,000
+    t.env.ledger().set_sequence_number(80_000);
+    client.submit_proof(&t.supplier, &shipment_id, &0, &String::from_str(&t.env, "ipfs://p0"));
+    
+    // Second extend at ledger 160,000
+    t.env.ledger().set_sequence_number(160_000);
+    client.confirm_milestone(&t.buyer, &shipment_id, &0);
+    
+    // Third extend at ledger 240,000
+    t.env.ledger().set_sequence_number(240_000);
+    client.submit_proof(&t.logistics, &shipment_id, &1, &String::from_str(&t.env, "ipfs://p1"));
+    
+    // Verify accessible at ledger 320,000 (past all previous TTL windows)
+    t.env.ledger().set_sequence_number(320_000);
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.status, ShipmentStatus::Active);
+}
+
+#[test]
+#[should_panic(expected = "ShipmentNotFound")]
+fn test_ttl_no_activity_causes_expiry() {
+    // Test that shipment expires if no operations extend TTL
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    
+    let shipment_id = String::from_str(&t.env, "TTL-INACTIVE");
+    let total_amount: i128 = 1_000_000_000;
+    
+    // Create at ledger 5000
+    t.env.ledger().set_sequence_number(5000);
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+    
+    // Verify accessible within window
+    t.env.ledger().set_sequence_number(50_000);
+    let _ = client.get_shipment(&shipment_id);
+    
+    // No operations performed, advance past expiry
+    // Expiry at: 5000 + 100,000 = 105,000
+    t.env.ledger().set_sequence_number(105_001);
+    
+    // Should panic - data archived due to inactivity
+    client.get_shipment(&shipment_id);
+}
+
+#[test]
+fn test_ttl_supplier_index_extends() {
+    // Test that supplier index TTL is extended on shipment creation
+    // Note: This test verifies the shipment itself persists, which implies
+    // the supplier index is also maintained (internal implementation detail)
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    
+    let shipment_id = String::from_str(&t.env, "TTL-SUPPLIER-IDX");
+    let total_amount: i128 = 1_000_000_000;
+    
+    // Create at ledger 2000
+    t.env.ledger().set_sequence_number(2000);
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+    
+    // Advance to ledger 90,000 (within TTL)
+    t.env.ledger().set_sequence_number(90_000);
+    
+    // Shipment should still be accessible (implies indexes are maintained)
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.supplier, t.supplier);
+    assert_eq!(shipment.status, ShipmentStatus::Active);
+}
+
+#[test]
+fn test_ttl_buyer_index_extends() {
+    // Test that buyer index TTL is extended on shipment creation
+    // Note: This test verifies the shipment itself persists, which implies
+    // the buyer index is also maintained (internal implementation detail)
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    
+    let shipment_id = String::from_str(&t.env, "TTL-BUYER-IDX");
+    let total_amount: i128 = 1_000_000_000;
+    
+    // Create at ledger 3000
+    t.env.ledger().set_sequence_number(3000);
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+    
+    // Advance to ledger 95,000 (within TTL)
+    t.env.ledger().set_sequence_number(95_000);
+    
+    // Shipment should still be accessible (implies indexes are maintained)
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.buyers.get(0).unwrap(), t.buyer);
+    assert_eq!(shipment.status, ShipmentStatus::Active);
+}
+
+#[test]
+fn test_ttl_completed_shipment_persists() {
+    // Test that completed shipments persist within TTL window
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    
+    let shipment_id = String::from_str(&t.env, "TTL-COMPLETED");
+    let total_amount: i128 = 1_000_000_000;
+    
+    // Create at ledger 4000
+    t.env.ledger().set_sequence_number(4000);
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+    
+    // Complete all milestones at ledger 5000
+    t.env.ledger().set_sequence_number(5000);
+    for i in 0..3u32 {
+        client.submit_proof(&t.supplier, &shipment_id, &i, &String::from_str(&t.env, &std::format!("ipfs://m{}", i)));
+        client.confirm_milestone(&t.buyer, &shipment_id, &i);
+    }
+    
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.status, ShipmentStatus::Completed);
+    
+    // Advance to ledger 90,000 (within TTL from last update at 5000)
+    t.env.ledger().set_sequence_number(90_000);
+    
+    // Completed shipment should still be accessible
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.status, ShipmentStatus::Completed);
+    assert_eq!(shipment.released_amount, total_amount);
+}
+
+#[test]
+#[should_panic(expected = "ShipmentNotFound")]
+fn test_ttl_completed_shipment_eventually_expires() {
+    // Test that even completed shipments expire after TTL
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    
+    let shipment_id = String::from_str(&t.env, "TTL-COMPLETED-EXP");
+    let total_amount: i128 = 1_000_000_000;
+    
+    // Create at ledger 6000
+    t.env.ledger().set_sequence_number(6000);
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+    
+    // Complete at ledger 7000
+    t.env.ledger().set_sequence_number(7000);
+    for i in 0..3u32 {
+        client.submit_proof(&t.supplier, &shipment_id, &i, &String::from_str(&t.env, &std::format!("ipfs://m{}", i)));
+        client.confirm_milestone(&t.buyer, &shipment_id, &i);
+    }
+    
+    // Advance past TTL: 7000 + 100,000 = 107,000
+    t.env.ledger().set_sequence_number(107_001);
+    
+    // Should panic - even completed shipments are archived
+    client.get_shipment(&shipment_id);
+}
+
+#[test]
+fn test_ttl_constants_documented() {
+    // This test documents the TTL constants used in production
+    // TTL_INITIAL_LEDGERS: Minimum TTL set on data writes
+    // TTL_MAX_LEDGERS: Maximum TTL that can be set
+    
+    use crate::constants::{TTL_INITIAL_LEDGERS, TTL_MAX_LEDGERS};
+    
+    // Verify constants match expected values
+    assert_eq!(TTL_INITIAL_LEDGERS, 100_000, "TTL_INITIAL_LEDGERS should be 100,000 ledgers (~5.8 days)");
+    assert_eq!(TTL_MAX_LEDGERS, 6_300_000, "TTL_MAX_LEDGERS should be 6,300,000 ledgers (~1 year)");
+    
+    // Document time calculations (at 5 seconds per ledger)
+    let initial_days = (TTL_INITIAL_LEDGERS * 5) / 86_400;
+    let max_days = (TTL_MAX_LEDGERS * 5) / 86_400;
+    
+    assert_eq!(initial_days, 5, "TTL_INITIAL_LEDGERS ≈ 5.8 days");
+    assert_eq!(max_days, 364, "TTL_MAX_LEDGERS ≈ 1 year");
+}
+
+#[test]
+fn test_ttl_extend_parameters_verified() {
+    // This test verifies that extend_ttl is called with correct parameters
+    // in the storage layer
+    
+    use crate::constants::{TTL_INITIAL_LEDGERS, TTL_MAX_LEDGERS};
+    
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    
+    let shipment_id = String::from_str(&t.env, "TTL-PARAMS");
+    let total_amount: i128 = 1_000_000_000;
+    
+    // Create shipment - this calls extend_ttl internally
+    t.env.ledger().set_sequence_number(1000);
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+    
+    // Verify shipment is accessible (extend_ttl was called correctly)
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.status, ShipmentStatus::Active);
+    
+    // Advance to near TTL_INITIAL_LEDGERS boundary
+    t.env.ledger().set_sequence_number(1000 + TTL_INITIAL_LEDGERS - 1);
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.status, ShipmentStatus::Active);
+    
+    // Verify TTL parameters are as expected
+    assert_eq!(TTL_INITIAL_LEDGERS, 100_000);
+    assert_eq!(TTL_MAX_LEDGERS, 6_300_000);
+}
+
+#[test]
+fn test_ttl_cancelled_shipment_persists() {
+    // Test that cancelled shipments persist within TTL
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    
+    let shipment_id = String::from_str(&t.env, "TTL-CANCELLED");
+    let total_amount: i128 = 1_000_000_000;
+    
+    // Create at ledger 8000
+    t.env.ledger().set_sequence_number(8000);
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+    
+    // Cancel at ledger 9000
+    t.env.ledger().set_sequence_number(9000);
+    client.cancel_shipment(&t.buyer, &shipment_id);
+    
+    // Verify cancelled status
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.status, ShipmentStatus::Cancelled);
+    
+    // Advance within TTL window (from ledger 9000)
+    t.env.ledger().set_sequence_number(90_000);
+    
+    // Should still be accessible
+    let shipment = client.get_shipment(&shipment_id);
+    assert_eq!(shipment.status, ShipmentStatus::Cancelled);
+}
+
+#[test]
+fn test_ttl_read_only_operations_no_extend() {
+    // Test that read-only operations don't extend TTL
+    // (This is implicit in Soroban - only writes extend TTL)
+    let t = setup();
+    let client = ChainSettleContractClient::new(&t.env, &t.contract_id);
+    
+    let shipment_id = String::from_str(&t.env, "TTL-READONLY");
+    let total_amount: i128 = 1_000_000_000;
+    
+    // Create at ledger 10,000
+    t.env.ledger().set_sequence_number(10_000);
+    create_standard_shipment(
+        &client, &t.env, &shipment_id, &t.buyer, &t.supplier,
+        &t.logistics, &t.arbiter, &t.token_id, total_amount,
+    );
+    
+    // Perform multiple read operations
+    for ledger in [20_000, 40_000, 60_000, 80_000, 100_000] {
+        t.env.ledger().set_sequence_number(ledger);
+        let _ = client.get_shipment(&shipment_id);
+        let _ = client.get_milestone(&shipment_id, &0);
+        let _ = client.get_escrow_balance(&shipment_id);
+    }
+    
+    // Reads don't extend TTL, so data should still expire at original TTL
+    // Original expiry: 10,000 + 100,000 = 110,000
+    t.env.ledger().set_sequence_number(109_999);
+    let _ = client.get_shipment(&shipment_id); // Should work
+}
+
+#[test]
+fn test_ttl_documentation_in_comments() {
+    // This test serves as documentation for TTL behavior
+    // 
+    // TTL (Time To Live) in Soroban:
+    // - Persistent storage entries have a TTL measured in ledgers
+    // - When TTL expires, data is archived (not deleted)
+    // - Archived data requires restoration before access
+    // - extend_ttl(threshold, max) sets: TTL = min(current_ledger + max, last_access + threshold)
+    //
+    // ChainSettle TTL Strategy:
+    // - TTL_INITIAL_LEDGERS (100,000): ~5.8 days minimum lifetime
+    // - TTL_MAX_LEDGERS (6,300,000): ~1 year maximum lifetime
+    // - Every write operation extends TTL
+    // - Read operations do NOT extend TTL
+    //
+    // Production Implications:
+    // - Active shipments stay accessible indefinitely (writes extend TTL)
+    // - Inactive shipments archive after ~5.8 days
+    // - Backend should call extend_ttl for important historical data
+    // - Archived data can be restored via Soroban RPC
+    
+    use crate::constants::{TTL_INITIAL_LEDGERS, TTL_MAX_LEDGERS};
+    
+    // Verify constants are properly defined
+    assert!(TTL_INITIAL_LEDGERS > 0, "TTL_INITIAL_LEDGERS must be positive");
+    assert!(TTL_MAX_LEDGERS > TTL_INITIAL_LEDGERS, "TTL_MAX_LEDGERS must exceed TTL_INITIAL_LEDGERS");
+    
+    // Document expected durations
+    let initial_seconds = TTL_INITIAL_LEDGERS * 5;
+    let max_seconds = TTL_MAX_LEDGERS * 5;
+    
+    assert_eq!(initial_seconds, 500_000, "TTL_INITIAL_LEDGERS = 500,000 seconds");
+    assert_eq!(max_seconds, 31_500_000, "TTL_MAX_LEDGERS = 31,500,000 seconds");
+}
