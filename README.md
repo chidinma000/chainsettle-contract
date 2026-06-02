@@ -33,6 +33,7 @@ This is **Repo 1 of 3** in the ChainSettle project:
 - [Deploying to Testnet](#deploying-to-testnet)
 - [Deploying to Mainnet](#deploying-to-mainnet)
 - [Security Considerations](#security-considerations)
+  - See detailed security model: [docs/SECURITY.md](docs/SECURITY.md)
 - [Roadmap](#roadmap)
 
 ---

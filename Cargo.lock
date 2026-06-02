@@ -264,9 +264,9 @@ name = "chainsetttle"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "proptest",
  "serde",
  "serde_json",
- "proptest",
  "soroban-sdk",
 ]
 
