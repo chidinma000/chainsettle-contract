@@ -125,7 +125,9 @@ impl BenchmarkResult {
     fn print(&self) {
         std::println!(
             "  {} (milestones={}): {} instructions",
-            self.function_name, self.milestone_count, self.instructions
+            self.function_name,
+            self.milestone_count,
+            self.instructions
         );
     }
 }
@@ -136,10 +138,10 @@ where
 {
     // Reset budget to get clean measurement
     env.cost_estimate().budget().reset_unlimited();
-    
+
     // Execute the function
     f();
-    
+
     // Get CPU instructions consumed
     env.cost_estimate().budget().cpu_instruction_cost()
 }
@@ -152,7 +154,10 @@ fn benchmark_create_shipment(milestone_count: u32) -> BenchmarkResult {
     let setup = setup_benchmark();
     let client = ChainSettleContractClient::new(&setup.env, &setup.contract_id);
 
-    let shipment_id = SorobanString::from_str(&setup.env, &std::format!("BENCH-CREATE-{}", milestone_count));
+    let shipment_id = SorobanString::from_str(
+        &setup.env,
+        &std::format!("BENCH-CREATE-{}", milestone_count),
+    );
     let milestones = build_milestones_n(&setup.env, milestone_count);
     let total_amount: i128 = 1_000_000_000;
 
@@ -181,7 +186,8 @@ fn benchmark_submit_proof(milestone_count: u32) -> BenchmarkResult {
     let setup = setup_benchmark();
     let client = ChainSettleContractClient::new(&setup.env, &setup.contract_id);
 
-    let shipment_id = SorobanString::from_str(&setup.env, &std::format!("BENCH-PROOF-{}", milestone_count));
+    let shipment_id =
+        SorobanString::from_str(&setup.env, &std::format!("BENCH-PROOF-{}", milestone_count));
     let milestones = build_milestones_n(&setup.env, milestone_count);
     let total_amount: i128 = 1_000_000_000;
 
@@ -215,7 +221,10 @@ fn benchmark_confirm_milestone(milestone_count: u32) -> BenchmarkResult {
     let setup = setup_benchmark();
     let client = ChainSettleContractClient::new(&setup.env, &setup.contract_id);
 
-    let shipment_id = SorobanString::from_str(&setup.env, &std::format!("BENCH-CONFIRM-{}", milestone_count));
+    let shipment_id = SorobanString::from_str(
+        &setup.env,
+        &std::format!("BENCH-CONFIRM-{}", milestone_count),
+    );
     let milestones = build_milestones_n(&setup.env, milestone_count);
     let total_amount: i128 = 1_000_000_000;
 
@@ -250,7 +259,10 @@ fn benchmark_raise_dispute(milestone_count: u32) -> BenchmarkResult {
     let setup = setup_benchmark();
     let client = ChainSettleContractClient::new(&setup.env, &setup.contract_id);
 
-    let shipment_id = SorobanString::from_str(&setup.env, &std::format!("BENCH-DISPUTE-{}", milestone_count));
+    let shipment_id = SorobanString::from_str(
+        &setup.env,
+        &std::format!("BENCH-DISPUTE-{}", milestone_count),
+    );
     let milestones = build_milestones_n(&setup.env, milestone_count);
     let total_amount: i128 = 1_000_000_000;
 
@@ -285,7 +297,10 @@ fn benchmark_resolve_dispute(milestone_count: u32) -> BenchmarkResult {
     let setup = setup_benchmark();
     let client = ChainSettleContractClient::new(&setup.env, &setup.contract_id);
 
-    let shipment_id = SorobanString::from_str(&setup.env, &std::format!("BENCH-RESOLVE-{}", milestone_count));
+    let shipment_id = SorobanString::from_str(
+        &setup.env,
+        &std::format!("BENCH-RESOLVE-{}", milestone_count),
+    );
     let milestones = build_milestones_n(&setup.env, milestone_count);
     let total_amount: i128 = 1_000_000_000;
 
@@ -321,7 +336,10 @@ fn benchmark_cancel_shipment(milestone_count: u32) -> BenchmarkResult {
     let setup = setup_benchmark();
     let client = ChainSettleContractClient::new(&setup.env, &setup.contract_id);
 
-    let shipment_id = SorobanString::from_str(&setup.env, &std::format!("BENCH-CANCEL-{}", milestone_count));
+    let shipment_id = SorobanString::from_str(
+        &setup.env,
+        &std::format!("BENCH-CANCEL-{}", milestone_count),
+    );
     let milestones = build_milestones_n(&setup.env, milestone_count);
     let total_amount: i128 = 1_000_000_000;
 
@@ -411,13 +429,17 @@ fn check_regression(results: &Vec<BenchmarkResult>) -> bool {
     };
 
     let mut passed = true;
-    std::println!("\n📊 Regression Check (threshold: +{}%)", (REGRESSION_THRESHOLD - 1.0) * 100.0);
+    std::println!(
+        "\n📊 Regression Check (threshold: +{}%)",
+        (REGRESSION_THRESHOLD - 1.0) * 100.0
+    );
     std::println!("{:-<80}", "");
 
     for result in results {
-        let baseline = baseline_data.baselines.iter().find(|b| {
-            b.function == result.function_name && b.milestones == result.milestone_count
-        });
+        let baseline = baseline_data
+            .baselines
+            .iter()
+            .find(|b| b.function == result.function_name && b.milestones == result.milestone_count);
 
         if let Some(baseline) = baseline {
             let ratio = result.instructions as f64 / baseline.instructions as f64;
@@ -441,7 +463,8 @@ fn check_regression(results: &Vec<BenchmarkResult>) -> bool {
         } else {
             std::println!(
                 "⚠️  {} (m={}): No baseline found",
-                result.function_name, result.milestone_count
+                result.function_name,
+                result.milestone_count
             );
         }
     }

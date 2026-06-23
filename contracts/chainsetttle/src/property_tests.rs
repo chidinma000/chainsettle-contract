@@ -231,13 +231,10 @@ proptest! {
 mod contract_prop_tests {
     use super::*;
     use crate::{
-        ChainSettleContract, ChainSettleContractClient, Milestone, MilestoneMode,
-        MilestoneStatus, ShipmentOptions,
+        ChainSettleContract, ChainSettleContractClient, Milestone, MilestoneMode, MilestoneStatus,
+        ShipmentOptions,
     };
-    use soroban_sdk::{
-        testutils::Address as _,
-        token, vec, Address, Env, String,
-    };
+    use soroban_sdk::{testutils::Address as _, token, vec, Address, Env, String};
 
     fn make_env_and_client() -> (Env, Address, Address, Address, Address, Address, Address) {
         let env = Env::default();
@@ -254,7 +251,15 @@ mod contract_prop_tests {
         token::StellarAssetClient::new(&env, &token_id).mint(&buyer, &10_000_000_000);
         let client = ChainSettleContractClient::new(&env, &contract_id);
         client.init(&buyer);
-        (env, contract_id, token_id, buyer, supplier, logistics, arbiter)
+        (
+            env,
+            contract_id,
+            token_id,
+            buyer,
+            supplier,
+            logistics,
+            arbiter,
+        )
     }
 
     fn make_shipment(

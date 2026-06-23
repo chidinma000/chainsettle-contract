@@ -47,7 +47,15 @@ fn setup() -> T {
 
     ChainSettleContractClient::new(&env, &contract_id).init(&buyer);
 
-    T { env, contract_id, token_id, buyer, supplier, logistics, arbiter }
+    T {
+        env,
+        contract_id,
+        token_id,
+        buyer,
+        supplier,
+        logistics,
+        arbiter,
+    }
 }
 
 fn milestones(env: &Env) -> soroban_sdk::Vec<Milestone> {
@@ -92,11 +100,7 @@ fn buyers(env: &Env, buyer: &Address) -> soroban_sdk::Vec<Address> {
 }
 
 /// Create a shipment and return the client.
-fn make_shipment<'a>(
-    client: &'a ChainSettleContractClient,
-    t: &T,
-    id: &str,
-) -> String {
+fn make_shipment<'a>(client: &'a ChainSettleContractClient, t: &T, id: &str) -> String {
     let sid = String::from_str(&t.env, id);
     client.create_shipment(
         &sid,
@@ -278,10 +282,18 @@ fn test_err_invalid_milestone_index_submit_proof() {
 
     let before = client.get_shipment(&sid);
 
-    client.submit_proof(&t.supplier, &sid, &99, &String::from_str(&t.env, "ipfs://x"));
+    client.submit_proof(
+        &t.supplier,
+        &sid,
+        &99,
+        &String::from_str(&t.env, "ipfs://x"),
+    );
 
     // Idempotency: shipment unchanged.
-    assert_eq!(client.get_shipment(&sid).released_amount, before.released_amount);
+    assert_eq!(
+        client.get_shipment(&sid).released_amount,
+        before.released_amount
+    );
 }
 
 /// confirm_milestone with out-of-range index must panic.
@@ -297,7 +309,10 @@ fn test_err_invalid_milestone_index_confirm_milestone() {
 
     client.confirm_milestone(&t.buyer, &sid, &99);
 
-    assert_eq!(client.get_shipment(&sid).released_amount, before.released_amount);
+    assert_eq!(
+        client.get_shipment(&sid).released_amount,
+        before.released_amount
+    );
 }
 
 /// get_milestone with out-of-range index must panic.
@@ -328,7 +343,10 @@ fn test_err_invalid_milestone_status_confirm_pending() {
 
     client.confirm_milestone(&t.buyer, &sid, &0);
 
-    assert_eq!(client.get_shipment(&sid).released_amount, before.released_amount);
+    assert_eq!(
+        client.get_shipment(&sid).released_amount,
+        before.released_amount
+    );
 }
 
 /// submit_proof on a ProofSubmitted milestone (not Pending) must panic.
@@ -363,7 +381,10 @@ fn test_err_invalid_milestone_status_dispute_pending() {
 
     client.raise_dispute(&t.buyer, &sid, &0);
 
-    assert_eq!(client.get_shipment(&sid).open_dispute_count, before.open_dispute_count);
+    assert_eq!(
+        client.get_shipment(&sid).open_dispute_count,
+        before.open_dispute_count
+    );
 }
 
 /// resolve_dispute on a non-Disputed milestone must panic.
@@ -426,7 +447,10 @@ fn test_err_shipment_not_active_confirm_after_completion() {
     // Attempt to confirm again on a completed shipment.
     client.confirm_milestone(&t.buyer, &sid, &0);
 
-    assert_eq!(client.get_shipment(&sid).released_amount, before.released_amount);
+    assert_eq!(
+        client.get_shipment(&sid).released_amount,
+        before.released_amount
+    );
 }
 
 /// cancel_shipment on an already-cancelled shipment must panic.
@@ -667,7 +691,10 @@ fn test_err_dispute_already_open_second_dispute() {
     client.raise_dispute(&t.buyer, &sid, &1);
 
     // Idempotency: open_dispute_count unchanged.
-    assert_eq!(client.get_shipment(&sid).open_dispute_count, before.open_dispute_count);
+    assert_eq!(
+        client.get_shipment(&sid).open_dispute_count,
+        before.open_dispute_count
+    );
 }
 
 /// After resolving the first dispute, a new one can be opened (slot freed).

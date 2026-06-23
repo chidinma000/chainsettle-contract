@@ -1,7 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, BytesN, Env, String, Vec, Symbol,
+    contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env, String,
+    Symbol, Vec,
 };
 
 // ============================================================
@@ -70,7 +71,6 @@ pub struct Shipment {
     pub id: String,
     /// Bounded audit log of status transitions (ring-buffer semantics, max 20).
     pub audit_log: Vec<AuditEntry>,
-
 
     /// All co-buyers. All must call confirm_milestone for payment to release.
     /// raise_dispute requires only one co-buyer's signature.
@@ -271,9 +271,8 @@ pub enum DataKey {
 // ERRORS
 // ============================================================
 
-#[contracttype]
+#[contracterror]
 #[derive(Clone, Copy, PartialEq)]
-#[repr(u32)]
 pub enum ChainSettleError {
     ShipmentAlreadyExists = 1,
     ShipmentNotFound = 2,
@@ -319,7 +318,6 @@ pub struct ChainSettleContract;
 
 #[contractimpl]
 impl ChainSettleContract {
-
     // ----------------------------------------------------------
     // INIT
     // ----------------------------------------------------------
@@ -330,9 +328,15 @@ impl ChainSettleContract {
         // Initialise paused to false.
         env.storage().instance().set(&DataKey::Paused, &false);
         // Initialize default milestone and dispute limits.
-        env.storage().instance().set(&DataKey::MinMilestonePercent, &5u32);
-        env.storage().instance().set(&DataKey::MaxConcurrentDisputes, &1u32);
-        env.storage().instance().set(&DataKey::AdminActionLog, &Vec::<AuditEntry>::new(&env));
+        env.storage()
+            .instance()
+            .set(&DataKey::MinMilestonePercent, &5u32);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxConcurrentDisputes, &1u32);
+        env.storage()
+            .instance()
+            .set(&DataKey::AdminActionLog, &Vec::<AuditEntry>::new(&env));
         // Initialize contract stats.
         env.storage().instance().set(
             &DataKey::ContractStats,
@@ -348,14 +352,26 @@ impl ChainSettleContract {
             .persistent()
             .set(&DataKey::ActiveDisputes, &Vec::<DisputeEntry>::new(&env));
         // Initialize escalation threshold (0 = disabled).
-        env.storage().instance().set(&DataKey::EscalationThreshold, &0u32);
+        env.storage()
+            .instance()
+            .set(&DataKey::EscalationThreshold, &0u32);
         // Initialize max shipment value (0 = no cap).
-        env.storage().instance().set(&DataKey::MaxShipmentValue, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxShipmentValue, &0i128);
         // Initialize circuit breaker.
-        env.storage().instance().set(&DataKey::CircuitBreakerLimit, &0i128);
-        env.storage().instance().set(&DataKey::CircuitBreakerWindow, &0u32);
-        env.storage().instance().set(&DataKey::CircuitBreakerWindowStart, &0u32);
-        env.storage().instance().set(&DataKey::CircuitBreakerWindowOutflow, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerLimit, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerWindow, &0u32);
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerWindowStart, &0u32);
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerWindowOutflow, &0i128);
     }
 
     // ----------------------------------------------------------
@@ -373,7 +389,8 @@ impl ChainSettleContract {
         if admin != stored_admin {
             panic!("unauthorized");
         }
-        env.deployer().update_current_contract_wasm(new_wasm_hash.clone());
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
         env.events().publish(
             (Symbol::new(&env, "contract_upgraded"),),
             (new_wasm_hash, env.ledger().sequence()),
@@ -393,7 +410,11 @@ impl ChainSettleContract {
     pub fn pause(env: Env, admin: Address) {
         admin.require_auth();
         Self::assert_admin(&env, &admin);
-        Self::append_admin_action(&env, Symbol::new(&env, "pause"), Symbol::new(&env, "contract_paused"));
+        Self::append_admin_action(
+            &env,
+            Symbol::new(&env, "pause"),
+            Symbol::new(&env, "contract_paused"),
+        );
         env.storage().instance().set(&DataKey::Paused, &true);
         env.events().publish(
             (Symbol::new(&env, "contract_paused"),),
@@ -405,7 +426,11 @@ impl ChainSettleContract {
     pub fn unpause(env: Env, admin: Address) {
         admin.require_auth();
         Self::assert_admin(&env, &admin);
-        Self::append_admin_action(&env, Symbol::new(&env, "unpause"), Symbol::new(&env, "contract_unpaused"));
+        Self::append_admin_action(
+            &env,
+            Symbol::new(&env, "unpause"),
+            Symbol::new(&env, "contract_unpaused"),
+        );
         env.storage().instance().set(&DataKey::Paused, &false);
         env.events().publish(
             (Symbol::new(&env, "contract_unpaused"),),
@@ -420,7 +445,9 @@ impl ChainSettleContract {
     pub fn set_escalation_threshold(env: Env, admin: Address, threshold_ledgers: u32) {
         admin.require_auth();
         Self::assert_admin(&env, &admin);
-        env.storage().instance().set(&DataKey::EscalationThreshold, &threshold_ledgers);
+        env.storage()
+            .instance()
+            .set(&DataKey::EscalationThreshold, &threshold_ledgers);
         env.events().publish(
             (Symbol::new(&env, "escalation_threshold_set"),),
             threshold_ledgers,
@@ -428,7 +455,10 @@ impl ChainSettleContract {
     }
 
     pub fn get_escalation_threshold(env: Env) -> u32 {
-        env.storage().instance().get(&DataKey::EscalationThreshold).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::EscalationThreshold)
+            .unwrap_or(0)
     }
 
     // ----------------------------------------------------------
@@ -438,15 +468,18 @@ impl ChainSettleContract {
     pub fn set_max_shipment_value(env: Env, admin: Address, max_value: i128) {
         admin.require_auth();
         Self::assert_admin(&env, &admin);
-        env.storage().instance().set(&DataKey::MaxShipmentValue, &max_value);
-        env.events().publish(
-            (Symbol::new(&env, "max_shipment_value_set"),),
-            max_value,
-        );
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxShipmentValue, &max_value);
+        env.events()
+            .publish((Symbol::new(&env, "max_shipment_value_set"),), max_value);
     }
 
     pub fn get_max_shipment_value(env: Env) -> i128 {
-        env.storage().instance().get(&DataKey::MaxShipmentValue).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxShipmentValue)
+            .unwrap_or(0)
     }
 
     // ----------------------------------------------------------
@@ -456,10 +489,19 @@ impl ChainSettleContract {
     pub fn set_circuit_breaker(env: Env, admin: Address, limit: i128, window_ledgers: u32) {
         admin.require_auth();
         Self::assert_admin(&env, &admin);
-        env.storage().instance().set(&DataKey::CircuitBreakerLimit, &limit);
-        env.storage().instance().set(&DataKey::CircuitBreakerWindow, &window_ledgers);
-        env.storage().instance().set(&DataKey::CircuitBreakerWindowStart, &env.ledger().sequence());
-        env.storage().instance().set(&DataKey::CircuitBreakerWindowOutflow, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerLimit, &limit);
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerWindow, &window_ledgers);
+        env.storage().instance().set(
+            &DataKey::CircuitBreakerWindowStart,
+            &env.ledger().sequence(),
+        );
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerWindowOutflow, &0i128);
         env.events().publish(
             (Symbol::new(&env, "circuit_breaker_set"),),
             (limit, window_ledgers),
@@ -470,14 +512,21 @@ impl ChainSettleContract {
     // MULTI-ADMIN GOVERNANCE
     // ----------------------------------------------------------
 
-    pub fn initialize_multisig_admin(env: Env, admin: Address, admins: Vec<Address>, threshold: u32) {
+    pub fn initialize_multisig_admin(
+        env: Env,
+        admin: Address,
+        admins: Vec<Address>,
+        threshold: u32,
+    ) {
         admin.require_auth();
         Self::assert_admin(&env, &admin);
         if admins.len() < 1 || threshold < 1 || threshold > admins.len() as u32 {
             panic!("invalid multi-sig parameters");
         }
         let config = MultiAdminConfig { admins, threshold };
-        env.storage().instance().set(&DataKey::MultiAdminConfig, &config);
+        env.storage()
+            .instance()
+            .set(&DataKey::MultiAdminConfig, &config);
         env.events().publish(
             (Symbol::new(&env, "multisig_admin_initialized"),),
             threshold,
@@ -528,10 +577,15 @@ impl ChainSettleContract {
         }
 
         approvals.push_back(admin.clone());
-        env.storage().persistent().set(&DataKey::AdminApprovals(action_id.clone()), &approvals);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AdminApprovals(action_id.clone()), &approvals);
 
         env.events().publish(
-            (Symbol::new(&env, "admin_action_proposed"), action_id.clone()),
+            (
+                Symbol::new(&env, "admin_action_proposed"),
+                action_id.clone(),
+            ),
             approvals.len() as u32,
         );
 
@@ -539,7 +593,9 @@ impl ChainSettleContract {
         if approvals.len() as u32 >= config.threshold {
             // Execute action
             Self::execute_admin_action(&env, &action_id, operation, params);
-            env.storage().persistent().remove(&DataKey::AdminApprovals(action_id.clone()));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::AdminApprovals(action_id.clone()));
         }
     }
 
@@ -564,23 +620,28 @@ impl ChainSettleContract {
     // ----------------------------------------------------------
 
     /// Set or update the platform fee. Max 1000 bps (10%). Admin only.
-    pub fn set_fee_config(env: Env, admin: Address, fee_bps: u32, treasury: Address) -> Result<(), ChainSettleError> {
+    pub fn set_fee_config(env: Env, admin: Address, fee_bps: u32, treasury: Address) {
         admin.require_auth();
         Self::assert_admin(&env, &admin);
         if fee_bps > 1000 {
-            return Err(ChainSettleError::FeeTooHigh);
+            panic!("fee_bps exceeds maximum of 1000");
         }
-        Self::append_admin_action(&env, Symbol::new(&env, "set_fee_config"), Symbol::new(&env, "fee_config_updated"));
+        Self::append_admin_action(
+            &env,
+            Symbol::new(&env, "set_fee_config"),
+            Symbol::new(&env, "fee_config_updated"),
+        );
         env.storage()
             .instance()
             .set(&DataKey::FeeConfig, &FeeConfig { fee_bps, treasury });
-        Ok(())
     }
 
     pub fn set_max_concurrent_disputes(env: Env, admin: Address, limit: u32) {
         admin.require_auth();
         Self::assert_admin(&env, &admin);
-        env.storage().instance().set(&DataKey::MaxConcurrentDisputes, &limit);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxConcurrentDisputes, &limit);
         Self::append_admin_action(
             &env,
             Symbol::new(&env, "set_max_concurrent_disputes"),
@@ -604,12 +665,7 @@ impl ChainSettleContract {
         );
     }
 
-    pub fn blacklist_address(
-        env: Env,
-        admin: Address,
-        address: Address,
-        reason_hash: BytesN<32>,
-    ) {
+    pub fn blacklist_address(env: Env, admin: Address, address: Address, reason_hash: BytesN<32>) {
         admin.require_auth();
         Self::assert_admin(&env, &admin);
         env.storage()
@@ -625,7 +681,9 @@ impl ChainSettleContract {
     pub fn remove_from_blacklist(env: Env, admin: Address, address: Address) {
         admin.require_auth();
         Self::assert_admin(&env, &admin);
-        env.storage().instance().remove(&DataKey::Blacklisted(address.clone()));
+        env.storage()
+            .instance()
+            .remove(&DataKey::Blacklisted(address.clone()));
         Self::append_admin_action(
             &env,
             Symbol::new(&env, "remove_from_blacklist"),
@@ -658,14 +716,20 @@ impl ChainSettleContract {
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic!("unauthorized"));
         admin.require_auth();
-        Self::append_admin_action(&env, Symbol::new(&env, "add_allowed_token"), Symbol::new(&env, "allowed_token_added"));
+        Self::append_admin_action(
+            &env,
+            Symbol::new(&env, "add_allowed_token"),
+            Symbol::new(&env, "allowed_token_added"),
+        );
         let mut allowed: Vec<Address> = env
             .storage()
             .instance()
             .get(&DataKey::AllowedTokens)
             .unwrap_or_else(|| Vec::new(&env));
         allowed.push_back(token);
-        env.storage().instance().set(&DataKey::AllowedTokens, &allowed);
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowedTokens, &allowed);
     }
 
     pub fn remove_allowed_token(env: Env, token: Address) {
@@ -675,7 +739,11 @@ impl ChainSettleContract {
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic!("unauthorized"));
         admin.require_auth();
-        Self::append_admin_action(&env, Symbol::new(&env, "remove_allowed_token"), Symbol::new(&env, "allowed_token_removed"));
+        Self::append_admin_action(
+            &env,
+            Symbol::new(&env, "remove_allowed_token"),
+            Symbol::new(&env, "allowed_token_removed"),
+        );
         let allowed: Vec<Address> = env
             .storage()
             .instance()
@@ -688,9 +756,10 @@ impl ChainSettleContract {
                 new_list.push_back(t);
             }
         }
-        env.storage().instance().set(&DataKey::AllowedTokens, &new_list);
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowedTokens, &new_list);
     }
-
 
     // ----------------------------------------------------------
     // CREATE SHIPMENT
@@ -708,7 +777,7 @@ impl ChainSettleContract {
         milestones: Vec<Milestone>,
         options: ShipmentOptions,
     ) -> String {
-
+        env.storage().instance().extend_ttl(100_000, 6_300_000);
         Self::assert_not_paused(&env);
         let response_deadline = options.response_deadline;
         let penalty_bps = options.penalty_bps;
@@ -733,7 +802,11 @@ impl ChainSettleContract {
         }
 
         // Check max shipment value cap.
-        let max_value: i128 = env.storage().instance().get(&DataKey::MaxShipmentValue).unwrap_or(0);
+        let max_value: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxShipmentValue)
+            .unwrap_or(0);
         if max_value > 0 && total_amount > max_value {
             panic!("total amount exceeds maximum shipment value");
         }
@@ -768,7 +841,12 @@ impl ChainSettleContract {
             }
         }
         for addr in [supplier.clone(), logistics.clone(), arbiter.clone()] {
-            if env.storage().instance().get::<DataKey, BytesN<32>>(&DataKey::Blacklisted(addr)).is_some() {
+            if env
+                .storage()
+                .instance()
+                .get::<DataKey, BytesN<32>>(&DataKey::Blacklisted(addr))
+                .is_some()
+            {
                 panic!("unauthorized");
             }
         }
@@ -801,7 +879,11 @@ impl ChainSettleContract {
         // Transfer total_amount from the primary buyer (index 0).
         let primary_buyer = buyers.get(0).unwrap();
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&primary_buyer, &env.current_contract_address(), &total_amount);
+        token_client.transfer(
+            &primary_buyer,
+            &env.current_contract_address(),
+            &total_amount,
+        );
 
         // Lock dispute bond pool: dispute_bond_amount * number_of_milestones (0 = disabled).
         if dispute_bond_amount > 0 {
@@ -852,20 +934,21 @@ impl ChainSettleContract {
             Symbol::new(&env, "create_shipment"),
         );
 
-
-
         env.storage()
             .persistent()
             .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
-        env.storage()
-            .persistent()
-            .set(
-                &DataKey::CancelPolicy(shipment_id.clone()),
-                &CancelPolicy { response_deadline, penalty_bps },
-            );
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Shipment(shipment_id.clone()), 100_000, 6_300_000);
+        env.storage().persistent().set(
+            &DataKey::CancelPolicy(shipment_id.clone()),
+            &CancelPolicy {
+                response_deadline,
+                penalty_bps,
+            },
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::Shipment(shipment_id.clone()),
+            100_000,
+            6_300_000,
+        );
 
         // Index by supplier for supplier-facing dashboards.
         let mut supplier_shipments: Vec<String> = env
@@ -874,12 +957,15 @@ impl ChainSettleContract {
             .get(&DataKey::SupplierShipments(supplier.clone()))
             .unwrap_or_else(|| Vec::new(&env));
         supplier_shipments.push_back(shipment_id.clone());
-        env.storage()
-            .persistent()
-            .set(&DataKey::SupplierShipments(supplier.clone()), &supplier_shipments);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::SupplierShipments(supplier.clone()), 100_000, 6_300_000);
+        env.storage().persistent().set(
+            &DataKey::SupplierShipments(supplier.clone()),
+            &supplier_shipments,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::SupplierShipments(supplier.clone()),
+            100_000,
+            6_300_000,
+        );
 
         // Index by each buyer for buyer-facing dashboards.
         for i in 0..shipment.buyers.len() {
@@ -893,9 +979,11 @@ impl ChainSettleContract {
             env.storage()
                 .persistent()
                 .set(&DataKey::BuyerShipments(buyer.clone()), &buyer_shipments);
-            env.storage()
-                .persistent()
-                .extend_ttl(&DataKey::BuyerShipments(buyer.clone()), 100_000, 6_300_000);
+            env.storage().persistent().extend_ttl(
+                &DataKey::BuyerShipments(buyer.clone()),
+                100_000,
+                6_300_000,
+            );
         }
 
         // Add to AllShipments list for pagination.
@@ -936,7 +1024,9 @@ impl ChainSettleContract {
             });
         stats.total_shipments += 1;
         stats.total_volume += total_amount;
-        env.storage().instance().set(&DataKey::ContractStats, &stats);
+        env.storage()
+            .instance()
+            .set(&DataKey::ContractStats, &stats);
 
         env.events().publish(
             (Symbol::new(&env, "shipment_created"), shipment_id.clone()),
@@ -962,12 +1052,7 @@ impl ChainSettleContract {
     /// Milestone percentages are unchanged; the higher total_amount proportionally
     /// increases each milestone's absolute payment.
     /// Disallowed once the shipment is Completed or Cancelled.
-    pub fn top_up_escrow(
-        env: Env,
-        buyer: Address,
-        shipment_id: String,
-        additional_amount: i128,
-    ) {
+    pub fn top_up_escrow(env: Env, buyer: Address, shipment_id: String, additional_amount: i128) {
         Self::assert_not_paused(&env);
         buyer.require_auth();
 
@@ -1011,6 +1096,7 @@ impl ChainSettleContract {
         milestone_index: u32,
         proof_hash: String,
     ) {
+        env.storage().instance().extend_ttl(100_000, 6_300_000);
         Self::assert_not_paused(&env);
         caller.require_auth();
 
@@ -1035,8 +1121,7 @@ impl ChainSettleContract {
         // Sequential mode: previous milestone must be complete.
         if shipment.milestone_mode == MilestoneMode::Sequential && milestone_index > 0 {
             let prev = shipment.milestones.get(milestone_index - 1).unwrap();
-            if prev.status != MilestoneStatus::Confirmed
-                && prev.status != MilestoneStatus::Resolved
+            if prev.status != MilestoneStatus::Confirmed && prev.status != MilestoneStatus::Resolved
             {
                 panic!("previous milestone not yet complete");
             }
@@ -1067,7 +1152,12 @@ impl ChainSettleContract {
         };
         env.events().publish(
             (event_topic, shipment_id.clone()),
-            (milestone_index, proof_hash_for_event, caller, current_ledger),
+            (
+                milestone_index,
+                proof_hash_for_event,
+                caller,
+                current_ledger,
+            ),
         );
     }
 
@@ -1075,12 +1165,8 @@ impl ChainSettleContract {
     // CONFIRM MILESTONE (multi-sig)
     // ----------------------------------------------------------
 
-    pub fn confirm_milestone(
-        env: Env,
-        buyer: Address,
-        shipment_id: String,
-        milestone_index: u32,
-    ) {
+    pub fn confirm_milestone(env: Env, buyer: Address, shipment_id: String, milestone_index: u32) {
+        env.storage().instance().extend_ttl(100_000, 6_300_000);
         Self::assert_not_paused(&env);
         buyer.require_auth();
 
@@ -1117,7 +1203,9 @@ impl ChainSettleContract {
         if shipment.late_penalty_bps_per_ledger > 0 {
             if let Some(proof_ledger) = milestone.proof_submitted_ledger {
                 let delay_ledgers = env.ledger().sequence() - proof_ledger;
-                let penalty = (payment * (shipment.late_penalty_bps_per_ledger as i128 * delay_ledgers as i128)) / 10_000;
+                let penalty = (payment
+                    * (shipment.late_penalty_bps_per_ledger as i128 * delay_ledgers as i128))
+                    / 10_000;
                 if penalty > 0 && penalty < payment {
                     penalty_deducted = penalty;
                     payment -= penalty;
@@ -1126,8 +1214,7 @@ impl ChainSettleContract {
         }
 
         if shipment.holdback_ledgers > 0 {
-            milestone.release_after_ledger =
-                env.ledger().sequence() + shipment.holdback_ledgers;
+            milestone.release_after_ledger = env.ledger().sequence() + shipment.holdback_ledgers;
             milestone.status = MilestoneStatus::ConfirmedHeld;
             shipment.milestones.set(milestone_index, milestone.clone());
 
@@ -1137,7 +1224,11 @@ impl ChainSettleContract {
 
             env.events().publish(
                 (Symbol::new(&env, "payment_held"), shipment_id.clone()),
-                (milestone_index, milestone.release_after_ledger, penalty_deducted),
+                (
+                    milestone_index,
+                    milestone.release_after_ledger,
+                    penalty_deducted,
+                ),
             );
         } else {
             let mut fee_amount: i128 = 0;
@@ -1181,9 +1272,16 @@ impl ChainSettleContract {
                         completed_shipments: 0,
                     });
                 stats.completed_shipments += 1;
-                env.storage().instance().set(&DataKey::ContractStats, &stats);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::ContractStats, &stats);
                 // Move from Active to Completed status index.
-                Self::move_shipment_status_index(&env, ShipmentStatus::Active, ShipmentStatus::Completed, &shipment_id);
+                Self::move_shipment_status_index(
+                    &env,
+                    ShipmentStatus::Active,
+                    ShipmentStatus::Completed,
+                    &shipment_id,
+                );
             }
 
             // Decrement total escrowed value.
@@ -1203,8 +1301,20 @@ impl ChainSettleContract {
 
             let remaining_amount = shipment.total_amount - shipment.released_amount;
             env.events().publish(
-                (Symbol::new(&env, "milestone_confirmed"), shipment_id.clone()),
-                (milestone_index, payment, fee_amount, penalty_deducted, shipment.supplier.clone(), env.ledger().sequence(), shipment.released_amount, remaining_amount),
+                (
+                    Symbol::new(&env, "milestone_confirmed"),
+                    shipment_id.clone(),
+                ),
+                (
+                    milestone_index,
+                    payment,
+                    fee_amount,
+                    penalty_deducted,
+                    shipment.supplier.clone(),
+                    env.ledger().sequence(),
+                    shipment.released_amount,
+                    remaining_amount,
+                ),
             );
         }
     }
@@ -1266,9 +1376,16 @@ impl ChainSettleContract {
                     completed_shipments: 0,
                 });
             stats.completed_shipments += 1;
-            env.storage().instance().set(&DataKey::ContractStats, &stats);
+            env.storage()
+                .instance()
+                .set(&DataKey::ContractStats, &stats);
             // Move from Active to Completed status index.
-            Self::move_shipment_status_index(&env, ShipmentStatus::Active, ShipmentStatus::Completed, &shipment_id);
+            Self::move_shipment_status_index(
+                &env,
+                ShipmentStatus::Active,
+                ShipmentStatus::Completed,
+                &shipment_id,
+            );
         }
 
         // Decrement total escrowed value.
@@ -1287,7 +1404,10 @@ impl ChainSettleContract {
             .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
 
         env.events().publish(
-            (Symbol::new(&env, "held_payment_released"), shipment_id.clone()),
+            (
+                Symbol::new(&env, "held_payment_released"),
+                shipment_id.clone(),
+            ),
             (milestone_index, payment, fee_amount),
         );
     }
@@ -1339,10 +1459,10 @@ impl ChainSettleContract {
             let payment = (shipment.total_amount * milestone.payment_percent as i128) / 100;
             let mut fee_amount: i128 = 0;
             let net_payment = Self::deduct_fee(&env, payment, &shipment.token, &mut fee_amount);
-            
+
             // Check circuit breaker before transferring payment
             Self::check_circuit_breaker(&env, payment);
-            
+
             shipment.released_amount += payment;
 
             let token_client = token::Client::new(&env, &shipment.token);
@@ -1365,8 +1485,19 @@ impl ChainSettleContract {
 
             let remaining_amount = shipment.total_amount - shipment.released_amount;
             env.events().publish(
-                (Symbol::new(&env, "milestone_confirmed"), shipment_id.clone()),
-                (idx, payment, fee_amount, shipment.supplier.clone(), env.ledger().sequence(), shipment.released_amount, remaining_amount),
+                (
+                    Symbol::new(&env, "milestone_confirmed"),
+                    shipment_id.clone(),
+                ),
+                (
+                    idx,
+                    payment,
+                    fee_amount,
+                    shipment.supplier.clone(),
+                    env.ledger().sequence(),
+                    shipment.released_amount,
+                    remaining_amount,
+                ),
             );
         }
 
@@ -1384,9 +1515,16 @@ impl ChainSettleContract {
                     completed_shipments: 0,
                 });
             stats.completed_shipments += 1;
-            env.storage().instance().set(&DataKey::ContractStats, &stats);
+            env.storage()
+                .instance()
+                .set(&DataKey::ContractStats, &stats);
             // Move from Active to Completed status index.
-            Self::move_shipment_status_index(&env, ShipmentStatus::Active, ShipmentStatus::Completed, &shipment_id);
+            Self::move_shipment_status_index(
+                &env,
+                ShipmentStatus::Active,
+                ShipmentStatus::Completed,
+                &shipment_id,
+            );
         }
 
         env.storage()
@@ -1394,17 +1532,11 @@ impl ChainSettleContract {
             .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
     }
 
-
     // ----------------------------------------------------------
     // RAISE DISPUTE
     // ----------------------------------------------------------
 
-    pub fn raise_dispute(
-        env: Env,
-        buyer: Address,
-        shipment_id: String,
-        milestone_index: u32,
-    ) {
+    pub fn raise_dispute(env: Env, buyer: Address, shipment_id: String, milestone_index: u32) {
         Self::assert_not_paused(&env);
         buyer.require_auth();
 
@@ -1488,7 +1620,9 @@ impl ChainSettleContract {
                 completed_shipments: 0,
             });
         stats.total_disputes += 1;
-        env.storage().instance().set(&DataKey::ContractStats, &stats);
+        env.storage()
+            .instance()
+            .set(&DataKey::ContractStats, &stats);
 
         env.events().publish(
             (Symbol::new(&env, "dispute_raised"), shipment_id.clone()),
@@ -1583,9 +1717,16 @@ impl ChainSettleContract {
                     completed_shipments: 0,
                 });
             stats.completed_shipments += 1;
-            env.storage().instance().set(&DataKey::ContractStats, &stats);
+            env.storage()
+                .instance()
+                .set(&DataKey::ContractStats, &stats);
             // Move from Active to Completed status index.
-            Self::move_shipment_status_index(&env, ShipmentStatus::Active, ShipmentStatus::Completed, &shipment_id);
+            Self::move_shipment_status_index(
+                &env,
+                ShipmentStatus::Active,
+                ShipmentStatus::Completed,
+                &shipment_id,
+            );
         }
 
         env.storage()
@@ -1625,7 +1766,11 @@ impl ChainSettleContract {
     /// Emits DisputeEscalated event if threshold exceeded.
     pub fn check_escalation(env: Env, shipment_id: String, milestone_index: u32) {
         let shipment = Self::get_shipment_internal(&env, &shipment_id);
-        let threshold: u32 = env.storage().instance().get(&DataKey::EscalationThreshold).unwrap_or(0);
+        let threshold: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EscalationThreshold)
+            .unwrap_or(0);
 
         if threshold == 0 {
             return; // Escalation not enabled
@@ -1656,6 +1801,7 @@ impl ChainSettleContract {
     // ----------------------------------------------------------
 
     pub fn cancel_shipment(env: Env, buyer: Address, shipment_id: String) {
+        env.storage().instance().extend_ttl(100_000, 6_300_000);
         Self::assert_not_paused(&env);
         buyer.require_auth();
 
@@ -1684,7 +1830,12 @@ impl ChainSettleContract {
         shipment.status = ShipmentStatus::Cancelled;
 
         // Move from Active to Cancelled status index.
-        Self::move_shipment_status_index(&env, ShipmentStatus::Active, ShipmentStatus::Cancelled, &shipment_id);
+        Self::move_shipment_status_index(
+            &env,
+            ShipmentStatus::Active,
+            ShipmentStatus::Cancelled,
+            &shipment_id,
+        );
 
         env.storage()
             .persistent()
@@ -1747,7 +1898,10 @@ impl ChainSettleContract {
             .storage()
             .persistent()
             .get(&DataKey::CancelPolicy(shipment_id.clone()))
-            .unwrap_or(CancelPolicy { response_deadline: 0, penalty_bps: 0 });
+            .unwrap_or(CancelPolicy {
+                response_deadline: 0,
+                penalty_bps: 0,
+            });
 
         if policy.response_deadline == 0 {
             panic!("supplier cancellation not enabled for this shipment");
@@ -1794,7 +1948,12 @@ impl ChainSettleContract {
         shipment.status = ShipmentStatus::Cancelled;
 
         // Move from Active to Cancelled status index.
-        Self::move_shipment_status_index(&env, ShipmentStatus::Active, ShipmentStatus::Cancelled, &shipment_id);
+        Self::move_shipment_status_index(
+            &env,
+            ShipmentStatus::Active,
+            ShipmentStatus::Cancelled,
+            &shipment_id,
+        );
 
         env.storage()
             .persistent()
@@ -1829,7 +1988,10 @@ impl ChainSettleContract {
             .set(&DataKey::ActiveDisputes, &new_disputes);
 
         env.events().publish(
-            (Symbol::new(&env, "supplier_cancellation"), shipment_id.clone()),
+            (
+                Symbol::new(&env, "supplier_cancellation"),
+                shipment_id.clone(),
+            ),
             (penalty, refund),
         );
     }
@@ -2028,7 +2190,10 @@ impl ChainSettleContract {
             .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
 
         env.events().publish(
-            (Symbol::new(&env, "supplier_transferred"), shipment_id.clone()),
+            (
+                Symbol::new(&env, "supplier_transferred"),
+                shipment_id.clone(),
+            ),
             (current_supplier, new_supplier),
         );
     }
@@ -2087,7 +2252,10 @@ impl ChainSettleContract {
         }
 
         env.events().publish(
-            (Symbol::new(&env, "arbiter_rotation_proposed"), shipment_id.clone()),
+            (
+                Symbol::new(&env, "arbiter_rotation_proposed"),
+                shipment_id.clone(),
+            ),
             new_arbiter.clone(),
         );
 
@@ -2116,11 +2284,7 @@ impl ChainSettleContract {
 
     /// Claim auto-confirmation for a milestone when the auto-confirm window has expired.
     /// Callable by anyone. Transfers payment to supplier and returns penalty to buyer if applicable.
-    pub fn claim_auto_confirmation(
-        env: Env,
-        shipment_id: String,
-        milestone_index: u32,
-    ) {
+    pub fn claim_auto_confirmation(env: Env, shipment_id: String, milestone_index: u32) {
         Self::assert_not_paused(&env);
 
         let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
@@ -2159,7 +2323,9 @@ impl ChainSettleContract {
         if shipment.late_penalty_bps_per_ledger > 0 {
             if let Some(proof_ledger) = milestone.proof_submitted_ledger {
                 let delay_ledgers = env.ledger().sequence() - proof_ledger;
-                let penalty = (payment * (shipment.late_penalty_bps_per_ledger as i128 * delay_ledgers as i128)) / 10_000;
+                let penalty = (payment
+                    * (shipment.late_penalty_bps_per_ledger as i128 * delay_ledgers as i128))
+                    / 10_000;
                 if penalty > 0 && penalty < payment {
                     penalty_deducted = penalty;
                     payment -= penalty;
@@ -2209,9 +2375,16 @@ impl ChainSettleContract {
                     completed_shipments: 0,
                 });
             stats.completed_shipments += 1;
-            env.storage().instance().set(&DataKey::ContractStats, &stats);
+            env.storage()
+                .instance()
+                .set(&DataKey::ContractStats, &stats);
             // Move from Active to Completed status index.
-            Self::move_shipment_status_index(&env, ShipmentStatus::Active, ShipmentStatus::Completed, &shipment_id);
+            Self::move_shipment_status_index(
+                &env,
+                ShipmentStatus::Active,
+                ShipmentStatus::Completed,
+                &shipment_id,
+            );
         }
 
         // Decrement total escrowed value.
@@ -2230,7 +2403,10 @@ impl ChainSettleContract {
             .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
 
         env.events().publish(
-            (Symbol::new(&env, "auto_confirmation_claimed"), shipment_id.clone()),
+            (
+                Symbol::new(&env, "auto_confirmation_claimed"),
+                shipment_id.clone(),
+            ),
             (milestone_index, payment, fee_amount, penalty_deducted),
         );
     }
@@ -2244,11 +2420,11 @@ impl ChainSettleContract {
     pub fn nominate_admin(env: Env, current_admin: Address, nominee: Address) {
         current_admin.require_auth();
         Self::assert_admin(&env, &current_admin);
-        env.storage().instance().set(&DataKey::PendingAdmin, &nominee);
-        env.events().publish(
-            (Symbol::new(&env, "admin_nominated"),),
-            nominee,
-        );
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &nominee);
+        env.events()
+            .publish((Symbol::new(&env, "admin_nominated"),), nominee);
     }
 
     /// Accept an outstanding admin nomination. Only the nominated address may call this.
@@ -2351,10 +2527,12 @@ impl ChainSettleContract {
     // ----------------------------------------------------------
 
     pub fn get_shipment(env: Env, shipment_id: String) -> Shipment {
+        env.storage().instance().extend_ttl(100_000, 6_300_000);
         Self::get_shipment_internal(&env, &shipment_id)
     }
 
     pub fn get_milestone(env: Env, shipment_id: String, milestone_index: u32) -> Milestone {
+        env.storage().instance().extend_ttl(100_000, 6_300_000);
         let shipment = Self::get_shipment_internal(&env, &shipment_id);
         shipment
             .milestones
@@ -2386,6 +2564,7 @@ impl ChainSettleContract {
     }
 
     pub fn get_escrow_balance(env: Env, shipment_id: String) -> i128 {
+        env.storage().instance().extend_ttl(100_000, 6_300_000);
         let shipment = Self::get_shipment_internal(&env, &shipment_id);
         shipment.total_amount - shipment.released_amount
     }
@@ -2461,11 +2640,7 @@ impl ChainSettleContract {
             idx += 1;
         }
 
-        let next_cursor = if idx < total_len {
-            Some(idx)
-        } else {
-            None
-        };
+        let next_cursor = if idx < total_len { Some(idx) } else { None };
 
         (result, next_cursor)
     }
@@ -2570,21 +2745,39 @@ impl ChainSettleContract {
     }
 
     fn check_circuit_breaker(env: &Env, payment: i128) {
-        let limit: i128 = env.storage().instance().get(&DataKey::CircuitBreakerLimit).unwrap_or(0);
+        let limit: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CircuitBreakerLimit)
+            .unwrap_or(0);
         if limit == 0 {
             return; // Circuit breaker disabled
         }
 
-        let window: u32 = env.storage().instance().get(&DataKey::CircuitBreakerWindow).unwrap_or(0);
-        let window_start: u32 = env.storage().instance().get(&DataKey::CircuitBreakerWindowStart).unwrap_or(0);
-        let mut window_outflow: i128 = env.storage().instance().get(&DataKey::CircuitBreakerWindowOutflow).unwrap_or(0);
+        let window: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CircuitBreakerWindow)
+            .unwrap_or(0);
+        let window_start: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CircuitBreakerWindowStart)
+            .unwrap_or(0);
+        let mut window_outflow: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CircuitBreakerWindowOutflow)
+            .unwrap_or(0);
 
         let current_ledger = env.ledger().sequence();
 
         // Reset window if expired
         if current_ledger >= window_start + window {
             window_outflow = 0;
-            env.storage().instance().set(&DataKey::CircuitBreakerWindowStart, &current_ledger);
+            env.storage()
+                .instance()
+                .set(&DataKey::CircuitBreakerWindowStart, &current_ledger);
         }
 
         // Check if this payment would exceed limit
@@ -2594,7 +2787,9 @@ impl ChainSettleContract {
 
         // Update window outflow
         window_outflow += payment;
-        env.storage().instance().set(&DataKey::CircuitBreakerWindowOutflow, &window_outflow);
+        env.storage()
+            .instance()
+            .set(&DataKey::CircuitBreakerWindowOutflow, &window_outflow);
     }
 
     fn get_shipment_internal(env: &Env, shipment_id: &String) -> Shipment {
@@ -2608,7 +2803,11 @@ impl ChainSettleContract {
         // Maintain a bounded ring-buffer of max 20 entries.
         let entry = AuditEntry {
             action,
-            caller: env.storage().instance().get(&DataKey::Admin).unwrap_or_else(|| panic!("unauthorized")),
+            caller: env
+                .storage()
+                .instance()
+                .get(&DataKey::Admin)
+                .unwrap_or_else(|| panic!("unauthorized")),
             ledger: env.ledger().sequence(),
 
             detail,
@@ -2636,7 +2835,11 @@ impl ChainSettleContract {
             .unwrap_or_else(|| Vec::new(env));
         let entry = AuditEntry {
             action,
-            caller: env.storage().instance().get(&DataKey::Admin).unwrap_or_else(|| panic!("unauthorized")),
+            caller: env
+                .storage()
+                .instance()
+                .get(&DataKey::Admin)
+                .unwrap_or_else(|| panic!("unauthorized")),
             ledger: env.ledger().sequence(),
             detail,
         };
@@ -2652,7 +2855,6 @@ impl ChainSettleContract {
     }
 
     fn all_milestones_done(shipment: &Shipment) -> bool {
-
         for i in 0..shipment.milestones.len() {
             let s = shipment.milestones.get(i).unwrap().status;
             if s != MilestoneStatus::Confirmed && s != MilestoneStatus::Resolved {
@@ -2665,7 +2867,11 @@ impl ChainSettleContract {
     /// Deducts the platform fee from `gross_payment` and transfers it to the treasury.
     /// Returns the net amount after fee. Updates `fee_out` with the fee taken.
     fn deduct_fee(env: &Env, gross: i128, token: &Address, fee_out: &mut i128) -> i128 {
-        if let Some(config) = env.storage().instance().get::<DataKey, FeeConfig>(&DataKey::FeeConfig) {
+        if let Some(config) = env
+            .storage()
+            .instance()
+            .get::<DataKey, FeeConfig>(&DataKey::FeeConfig)
+        {
             let fee = (gross * config.fee_bps as i128) / 10_000;
             if fee > 0 {
                 let token_client = token::Client::new(env, token);
@@ -2722,7 +2928,8 @@ impl ChainSettleContract {
     }
 }
 
-mod test;
 mod benchmarks;
-mod test_errors;
+pub mod constants;
 mod property_tests;
+mod test;
+mod test_errors;
