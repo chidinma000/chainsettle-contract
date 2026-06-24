@@ -1,5 +1,8 @@
 # ChainSettle — Contract Repo
 
+[![CI](https://github.com/shakurJJ/chainsettle-contract/actions/workflows/ci.yml/badge.svg)](https://github.com/shakurJJ/chainsettle-contract/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/shakurJJ/chainsettle-contract/branch/main/graph/badge.svg)](https://codecov.io/gh/shakurJJ/chainsettle-contract)
+
 > **Milestone-based supply chain escrow on Stellar Soroban**
 
 ChainSettle is a Soroban smart contract that locks buyer payment in escrow and automatically releases funds to the supplier as each delivery milestone is confirmed on-chain. No middlemen, no delayed wire transfers, no trust required.
@@ -30,6 +33,7 @@ This is **Repo 1 of 3** in the ChainSettle project:
 - [Deploying to Testnet](#deploying-to-testnet)
 - [Deploying to Mainnet](#deploying-to-mainnet)
 - [Security Considerations](#security-considerations)
+  - See detailed security model: [docs/SECURITY.md](docs/SECURITY.md)
 - [Roadmap](#roadmap)
 
 ---
@@ -415,6 +419,9 @@ stellar contract deploy \
 - **Percentage validation**: The contract validates that all milestone percentages sum exactly to 100 at shipment creation. Rounding is integer-based — for amounts where `total * percent / 100` doesn't divide evenly, the final milestone may receive a slightly different amount. Consider adjusting percentages accordingly.
 - **TTL / State Archival**: Persistent storage entries are given an extended TTL (~1 year) at creation. Long-lived shipments should call `extend_ttl` via the backend before entries archive.
 - **No upgradability (MVP)**: This scaffold has no upgrade mechanism. For production, consider implementing Soroban's `upgrade` pattern.
+
+For a detailed threat analysis and security model, see [docs/SECURITY.md](docs/SECURITY.md).
+
 
 ---
 
