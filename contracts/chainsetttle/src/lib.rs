@@ -80,6 +80,8 @@ pub struct Shipment {
     pub token: Address,
     pub total_amount: i128,
     pub released_amount: i128,
+    /// Total advance payments made (deducted from milestone payments on confirmation).
+    pub total_advanced_amount: i128,
     pub milestones: Vec<Milestone>,
     pub status: ShipmentStatus,
     pub milestone_mode: MilestoneMode,
@@ -193,6 +195,15 @@ pub struct DisputeEntry {
     pub milestone_index: u32,
 }
 
+/// Supplier advance payment request for a milestone.
+#[contracttype]
+#[derive(Clone)]
+pub struct AdvanceRequest {
+    pub requested_percent: u32,
+    pub approved: bool,
+    pub amount_advanced: i128,
+}
+
 /// Multi-admin configuration for M-of-N approvals.
 #[contracttype]
 #[derive(Clone)]
@@ -274,6 +285,10 @@ pub enum DataKey {
     AdminApprovals(String),
     /// Pending admin nominee for two-step admin transfer.
     PendingAdmin,
+    /// Supplier advance request for (shipment_id, milestone_index).
+    AdvanceRequest(String, u32),
+    /// Contract-level max advance percent (default 30).
+    MaxAdvancePercent,
 }
 
 // ============================================================
@@ -309,6 +324,9 @@ pub enum ChainSettleError {
     ProofNotSubmitted = 24,
     AutoConfirmed = 25,
     HoldbackNotExpired = 26,
+    AdvanceExceedsMax = 27,
+    AdvanceNotRequested = 28,
+    AdvanceAlreadyApproved = 29,
 }
 
 // ============================================================
@@ -381,6 +399,10 @@ impl ChainSettleContract {
         env.storage()
             .instance()
             .set(&DataKey::CircuitBreakerWindowOutflow, &0i128);
+        // Initialize max advance percent (default 30%).
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxAdvancePercent, &30u32);
     }
 
     // ----------------------------------------------------------
@@ -681,6 +703,29 @@ impl ChainSettleContract {
         );
     }
 
+    pub fn set_max_advance_percent(env: Env, admin: Address, percent: u32) {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin);
+        if percent > 100 {
+            panic!("max advance percent must not exceed 100");
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxAdvancePercent, &percent);
+        Self::append_admin_action(
+            &env,
+            Symbol::new(&env, "set_max_advance_percent"),
+            Symbol::new(&env, "max_advance_percent_updated"),
+        );
+    }
+
+    pub fn get_max_advance_percent(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxAdvancePercent)
+            .unwrap_or(30)
+    }
+
     pub fn blacklist_address(env: Env, admin: Address, address: Address, reason_hash: BytesN<32>) {
         admin.require_auth();
         Self::assert_admin(&env, &admin);
@@ -930,6 +975,7 @@ impl ChainSettleContract {
             token: token.clone(),
             total_amount,
             released_amount: 0,
+            total_advanced_amount: 0,
             milestones: clean_milestones,
             status: ShipmentStatus::Active,
             milestone_mode,
@@ -1102,6 +1148,150 @@ impl ChainSettleContract {
     }
 
     // ----------------------------------------------------------
+    // SUPPLIER ADVANCE PAYMENT
+    // ----------------------------------------------------------
+
+    /// Supplier requests an advance draw of up to `advance_percent` of the milestone's
+    /// payment before submitting proof. Only callable on a Pending milestone.
+    pub fn request_advance(
+        env: Env,
+        caller: Address,
+        shipment_id: String,
+        milestone_index: u32,
+        advance_percent: u32,
+    ) {
+        env.storage().instance().extend_ttl(100_000, 6_300_000);
+        Self::assert_not_paused(&env);
+        caller.require_auth();
+
+        let shipment = Self::get_shipment_internal(&env, &shipment_id);
+
+        if shipment.status != ShipmentStatus::Active {
+            panic!("shipment is not active");
+        }
+        if caller != shipment.supplier {
+            panic!("unauthorized");
+        }
+        if milestone_index as usize >= shipment.milestones.len() as usize {
+            panic!("invalid milestone index");
+        }
+
+        let milestone = shipment.milestones.get(milestone_index).unwrap();
+        if milestone.status != MilestoneStatus::Pending {
+            panic!("milestone is not in pending status");
+        }
+
+        let max_advance: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxAdvancePercent)
+            .unwrap_or(30);
+        if advance_percent > max_advance {
+            panic!("AdvanceExceedsMax");
+        }
+
+        let advance_key = DataKey::AdvanceRequest(shipment_id.clone(), milestone_index);
+        if let Some(existing) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, AdvanceRequest>(&advance_key)
+        {
+            if existing.approved {
+                panic!("AdvanceAlreadyApproved");
+            }
+        }
+
+        let request = AdvanceRequest {
+            requested_percent: advance_percent,
+            approved: false,
+            amount_advanced: 0,
+        };
+        env.storage()
+            .persistent()
+            .set(&advance_key, &request);
+        env.storage()
+            .persistent()
+            .extend_ttl(&advance_key, 100_000, 6_300_000);
+
+        env.events().publish(
+            (Symbol::new(&env, "advance_requested"), shipment_id.clone()),
+            (milestone_index, advance_percent, caller),
+        );
+    }
+
+    /// Buyer approves a pending advance request. Transfers the advance amount to
+    /// the supplier immediately. The advance is deducted from the milestone payment
+    /// when the milestone is later confirmed.
+    pub fn approve_advance(env: Env, buyer: Address, shipment_id: String, milestone_index: u32) {
+        env.storage().instance().extend_ttl(100_000, 6_300_000);
+        Self::assert_not_paused(&env);
+        buyer.require_auth();
+
+        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+
+        if shipment.status != ShipmentStatus::Active {
+            panic!("shipment is not active");
+        }
+        Self::assert_is_buyer(&shipment, &buyer);
+
+        if milestone_index as usize >= shipment.milestones.len() as usize {
+            panic!("invalid milestone index");
+        }
+
+        let advance_key = DataKey::AdvanceRequest(shipment_id.clone(), milestone_index);
+        let mut request: AdvanceRequest = env
+            .storage()
+            .persistent()
+            .get(&advance_key)
+            .unwrap_or_else(|| panic!("AdvanceNotRequested"));
+
+        if request.approved {
+            panic!("AdvanceAlreadyApproved");
+        }
+
+        let milestone = shipment.milestones.get(milestone_index).unwrap();
+        let milestone_payment =
+            (shipment.total_amount * milestone.payment_percent as i128) / 100;
+        let advance_amount = (milestone_payment * request.requested_percent as i128) / 100;
+
+        request.approved = true;
+        request.amount_advanced = advance_amount;
+        env.storage()
+            .persistent()
+            .set(&advance_key, &request);
+
+        // Transfer advance to supplier.
+        let token_client = token::Client::new(&env, &shipment.token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &shipment.supplier,
+            &advance_amount,
+        );
+
+        // Track total advances for correct escrow accounting.
+        shipment.total_advanced_amount += advance_amount;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
+
+        // Decrement total escrowed value for this token.
+        let current_escrowed: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TotalEscrowed(shipment.token.clone()))
+            .unwrap_or(0);
+        env.storage().persistent().set(
+            &DataKey::TotalEscrowed(shipment.token.clone()),
+            &(current_escrowed - advance_amount).max(0),
+        );
+
+        env.events().publish(
+            (Symbol::new(&env, "advance_approved"), shipment_id.clone()),
+            (milestone_index, advance_amount, shipment.supplier.clone()),
+        );
+    }
+
+    // ----------------------------------------------------------
     // SUBMIT PROOF
     // ----------------------------------------------------------
 
@@ -1214,6 +1404,10 @@ impl ChainSettleContract {
 
         let mut payment = (shipment.total_amount * milestone.payment_percent as i128) / 100;
 
+        // Deduct any approved advance for this milestone.
+        let advance_deducted =
+            Self::consume_advance_for_milestone(&env, &mut shipment, &shipment_id, milestone_index);
+
         // Apply late-delivery penalty if configured.
         let mut penalty_deducted: i128 = 0;
         if shipment.late_penalty_bps_per_ledger > 0 {
@@ -1257,12 +1451,16 @@ impl ChainSettleContract {
             shipment.milestones.set(milestone_index, milestone);
             shipment.released_amount += payment;
 
+            // Transfer the net payment minus any advance already sent.
+            let actual_transfer = net_payment - advance_deducted;
             let token_client = token::Client::new(&env, &shipment.token);
-            token_client.transfer(
-                &env.current_contract_address(),
-                &shipment.supplier,
-                &net_payment,
-            );
+            if actual_transfer > 0 {
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &shipment.supplier,
+                    &actual_transfer,
+                );
+            }
 
             // Return penalty to buyer if any.
             if penalty_deducted > 0 {
@@ -1301,7 +1499,8 @@ impl ChainSettleContract {
                 );
             }
 
-            // Decrement total escrowed value.
+            // Decrement total escrowed value (net of any advance already deducted).
+            let net_outflow = payment - advance_deducted;
             let current_escrowed: i128 = env
                 .storage()
                 .persistent()
@@ -1309,7 +1508,7 @@ impl ChainSettleContract {
                 .unwrap_or(0);
             env.storage().persistent().set(
                 &DataKey::TotalEscrowed(shipment.token.clone()),
-                &(current_escrowed - payment).max(0),
+                &(current_escrowed - net_outflow).max(0),
             );
 
             env.storage()
@@ -1361,6 +1560,11 @@ impl ChainSettleContract {
         }
 
         let payment = (shipment.total_amount * milestone.payment_percent as i128) / 100;
+
+        // Deduct any approved advance for this milestone.
+        let advance_deducted =
+            Self::consume_advance_for_milestone(&env, &mut shipment, &shipment_id, milestone_index);
+
         let mut fee_amount: i128 = 0;
         let net_payment = Self::deduct_fee(&env, payment, &shipment.token, &mut fee_amount);
 
@@ -1372,12 +1576,15 @@ impl ChainSettleContract {
         shipment.milestones.set(milestone_index, milestone);
         shipment.released_amount += payment;
 
+        let actual_transfer = net_payment - advance_deducted;
         let token_client = token::Client::new(&env, &shipment.token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &shipment.supplier,
-            &net_payment,
-        );
+        if actual_transfer > 0 {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &shipment.supplier,
+                &actual_transfer,
+            );
+        }
 
         if Self::all_milestones_done(&shipment) {
             shipment.status = ShipmentStatus::Completed;
@@ -1406,7 +1613,8 @@ impl ChainSettleContract {
             );
         }
 
-        // Decrement total escrowed value.
+        // Decrement total escrowed value (net of any advance already deducted).
+        let net_outflow = payment - advance_deducted;
         let current_escrowed: i128 = env
             .storage()
             .persistent()
@@ -1414,7 +1622,7 @@ impl ChainSettleContract {
             .unwrap_or(0);
         env.storage().persistent().set(
             &DataKey::TotalEscrowed(shipment.token.clone()),
-            &(current_escrowed - payment).max(0),
+            &(current_escrowed - net_outflow).max(0),
         );
 
         env.storage()
@@ -1475,6 +1683,11 @@ impl ChainSettleContract {
             shipment.milestones.set(idx, milestone.clone());
 
             let payment = (shipment.total_amount * milestone.payment_percent as i128) / 100;
+
+            // Deduct any approved advance for this milestone.
+            let advance_deducted =
+                Self::consume_advance_for_milestone(&env, &mut shipment, &shipment_id, idx);
+
             let mut fee_amount: i128 = 0;
             let net_payment = Self::deduct_fee(&env, payment, &shipment.token, &mut fee_amount);
 
@@ -1483,14 +1696,18 @@ impl ChainSettleContract {
 
             shipment.released_amount += payment;
 
+            let actual_transfer = net_payment - advance_deducted;
             let token_client = token::Client::new(&env, &shipment.token);
-            token_client.transfer(
-                &env.current_contract_address(),
-                &shipment.supplier,
-                &net_payment,
-            );
+            if actual_transfer > 0 {
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &shipment.supplier,
+                    &actual_transfer,
+                );
+            }
 
-            // Decrement total escrowed value.
+            // Decrement total escrowed value (net of any advance already deducted).
+            let net_outflow = payment - advance_deducted;
             let current_escrowed: i128 = env
                 .storage()
                 .persistent()
@@ -1498,7 +1715,7 @@ impl ChainSettleContract {
                 .unwrap_or(0);
             env.storage().persistent().set(
                 &DataKey::TotalEscrowed(shipment.token.clone()),
-                &(current_escrowed - payment).max(0),
+                &(current_escrowed - net_outflow).max(0),
             );
 
             let remaining_amount = shipment.total_amount - shipment.released_amount;
@@ -1681,6 +1898,15 @@ impl ChainSettleContract {
 
         if approve {
             let payment = (shipment.total_amount * milestone.payment_percent as i128) / 100;
+
+            // Deduct any approved advance for this milestone.
+            let advance_deducted = Self::consume_advance_for_milestone(
+                &env,
+                &mut shipment,
+                &shipment_id,
+                milestone_index,
+            );
+
             let mut fee_amount: i128 = 0;
             let net_payment = Self::deduct_fee(&env, payment, &shipment.token, &mut fee_amount);
 
@@ -1688,12 +1914,15 @@ impl ChainSettleContract {
             Self::check_circuit_breaker(&env, payment);
 
             shipment.released_amount += payment;
+            let actual_transfer = net_payment - advance_deducted;
             let token_client = token::Client::new(&env, &shipment.token);
-            token_client.transfer(
-                &env.current_contract_address(),
-                &shipment.supplier,
-                &net_payment,
-            );
+            if actual_transfer > 0 {
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &shipment.supplier,
+                    &actual_transfer,
+                );
+            }
             // Dispute approved: return the bond unit to the buyer.
             if shipment.dispute_bond_amount > 0 {
                 let primary_buyer = shipment.buyers.get(0).unwrap();
@@ -1842,7 +2071,7 @@ impl ChainSettleContract {
             }
         }
 
-        let refund = shipment.total_amount - shipment.released_amount;
+        let refund = shipment.total_amount - shipment.released_amount - shipment.total_advanced_amount;
         if refund > 0 {
             let primary_buyer = shipment.buyers.get(0).unwrap();
             let token_client = token::Client::new(&env, &shipment.token);
@@ -1952,7 +2181,7 @@ impl ChainSettleContract {
             panic!("buyer response deadline has not passed");
         }
 
-        let remaining = shipment.total_amount - shipment.released_amount;
+        let remaining = shipment.total_amount - shipment.released_amount - shipment.total_advanced_amount;
         let penalty = (remaining * policy.penalty_bps as i128) / 10_000;
         let refund = remaining - penalty;
 
@@ -2344,6 +2573,10 @@ impl ChainSettleContract {
 
         let mut payment = (shipment.total_amount * milestone.payment_percent as i128) / 100;
 
+        // Deduct any approved advance for this milestone.
+        let advance_deducted =
+            Self::consume_advance_for_milestone(&env, &mut shipment, &shipment_id, milestone_index);
+
         // Apply late-delivery penalty if configured.
         let mut penalty_deducted: i128 = 0;
         if shipment.late_penalty_bps_per_ledger > 0 {
@@ -2370,12 +2603,15 @@ impl ChainSettleContract {
         shipment.milestones.set(milestone_index, milestone);
         shipment.released_amount += payment;
 
+        let actual_transfer = net_payment - advance_deducted;
         let token_client = token::Client::new(&env, &shipment.token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &shipment.supplier,
-            &net_payment,
-        );
+        if actual_transfer > 0 {
+            token_client.transfer(
+                &env.current_contract_address(),
+                &shipment.supplier,
+                &actual_transfer,
+            );
+        }
 
         // Return penalty to buyer if any.
         if penalty_deducted > 0 {
@@ -2413,16 +2649,17 @@ impl ChainSettleContract {
             );
         }
 
-        // Decrement total escrowed value.
-        let current_escrowed: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::TotalEscrowed(shipment.token.clone()))
-            .unwrap_or(0);
-        env.storage().persistent().set(
-            &DataKey::TotalEscrowed(shipment.token.clone()),
-            &(current_escrowed - payment).max(0),
-        );
+            // Decrement total escrowed value.
+            let net_outflow = payment - advance_deducted;
+            let current_escrowed: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::TotalEscrowed(shipment.token.clone()))
+                .unwrap_or(0);
+            env.storage().persistent().set(
+                &DataKey::TotalEscrowed(shipment.token.clone()),
+                &(current_escrowed - net_outflow).max(0),
+            );
 
         env.storage()
             .persistent()
@@ -2512,7 +2749,7 @@ impl ChainSettleContract {
             panic!("recovery threshold not reached");
         }
 
-        let recovery_amount = shipment.total_amount - shipment.released_amount;
+        let recovery_amount = shipment.total_amount - shipment.released_amount - shipment.total_advanced_amount;
 
         if recovery_amount > 0 {
             let token_client = token::Client::new(&env, &shipment.token);
@@ -2588,12 +2825,12 @@ impl ChainSettleContract {
         if shipment.total_amount <= 0 {
             return 0;
         }
-        if shipment.released_amount <= 0 {
+        if shipment.released_amount + shipment.total_advanced_amount <= 0 {
             return 0;
         }
 
         // Clamp to [0, 100] to avoid any unexpected rounding / state drift.
-        let numerator: i128 = shipment.released_amount * 100;
+        let numerator: i128 = (shipment.released_amount + shipment.total_advanced_amount) * 100;
         let mut pct: i128 = numerator / shipment.total_amount;
         if pct < 0 {
             pct = 0;
@@ -2608,7 +2845,7 @@ impl ChainSettleContract {
     pub fn get_escrow_balance(env: Env, shipment_id: String) -> i128 {
         env.storage().instance().extend_ttl(100_000, 6_300_000);
         let shipment = Self::get_shipment_internal(&env, &shipment_id);
-        shipment.total_amount - shipment.released_amount
+        shipment.total_amount - shipment.released_amount - shipment.total_advanced_amount
     }
 
     pub fn get_fee_config(env: Env) -> Option<FeeConfig> {
@@ -2784,6 +3021,29 @@ impl ChainSettleContract {
                 panic!("transfer disallowed: open dispute must be resolved first");
             }
         }
+    }
+
+    /// Consumes an approved advance for a milestone, removing it from storage and
+    /// adjusting total_advanced_amount. Returns the advance amount (or 0 if none).
+    fn consume_advance_for_milestone(
+        env: &Env,
+        shipment: &mut Shipment,
+        shipment_id: &String,
+        milestone_index: u32,
+    ) -> i128 {
+        let advance_key = DataKey::AdvanceRequest(shipment_id.clone(), milestone_index);
+        if let Some(req) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, AdvanceRequest>(&advance_key)
+        {
+            if req.approved && req.amount_advanced > 0 {
+                env.storage().persistent().remove(&advance_key);
+                shipment.total_advanced_amount = (shipment.total_advanced_amount - req.amount_advanced).max(0);
+                return req.amount_advanced;
+            }
+        }
+        0
     }
 
     fn check_circuit_breaker(env: &Env, payment: i128) {
