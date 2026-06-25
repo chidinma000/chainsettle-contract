@@ -1,8 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env, String,
-    Symbol, Vec,
+    contract, contractimpl, contracttype, token, Address, BytesN, Env, String, Vec, Symbol,
 };
 
 // ============================================================
@@ -2550,6 +2549,22 @@ impl ChainSettleContract {
     }
 
     // ----------------------------------------------------------
+    // UPGRADE
+    // ----------------------------------------------------------
+
+    /// Admin upgrades the contract WASM. Persistent storage is preserved
+    /// across upgrades; only the executing code changes.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic!("not initialised"));
+        admin.require_auth();
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+    }
+
+    // ----------------------------------------------------------
     // READ-ONLY QUERIES
     // ----------------------------------------------------------
 
@@ -2988,4 +3003,7 @@ mod benchmarks;
 pub mod constants;
 mod property_tests;
 mod test;
-mod test_errors;
+mod test_upgrade;
+mod test_concurrent_disputes;
+mod test_boundaries;
+mod test_chaos;
