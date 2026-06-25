@@ -15,8 +15,7 @@ extern crate std;
 use super::*;
 use soroban_sdk::{
     testutils::Address as _,
-    token, vec, Address, Env, String,
-};
+    token, vec, Address, Env, String,, Symbol};
 use proptest::prelude::*;
 
 // Fixed slot IDs so we can reference shipments without heap allocation gymnastics
@@ -127,7 +126,7 @@ fn exec(
             let id = String::from_str(env, SLOT_IDS[*slot]);
             let proof = String::from_str(env, "ipfs://chaos");
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                client.submit_proof(supplier, &id, m, &proof);
+                client.submit_proof(supplier, &id, m, &proof, &Symbol::new(&env, "ipfs"));
             }));
         }
 

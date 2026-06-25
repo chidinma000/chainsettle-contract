@@ -10,8 +10,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::Address as _,
-    token, vec, Address, Env, String,
-};
+    token, vec, Address, Env, String,, Symbol};
 
 // Real WASM bytes — the same binary is used for both v1 and v2 in this test,
 // which isolates the state-persistence concern from any logic change.
@@ -107,14 +106,14 @@ fn test_wasm_upgrade_state_persists() {
     // --- S2: milestone 0 Confirmed, milestone 1 ProofSubmitted
     make_shipment(&client, &env, "UPG-002", &buyer, &supplier, &logistics, &arbiter, &token_id, amount);
     let id2 = String::from_str(&env, "UPG-002");
-    client.submit_proof(&supplier, &id2, &0, &String::from_str(&env, "ipfs://s2-m0"));
+    client.submit_proof(&supplier, &id2, &0, &String::from_str(&env, "ipfs://s2-m0"), &Symbol::new(&env, "ipfs"));
     client.confirm_milestone(&buyer, &id2, &0);
-    client.submit_proof(&logistics, &id2, &1, &String::from_str(&env, "ipfs://s2-m1"));
+    client.submit_proof(&logistics, &id2, &1, &String::from_str(&env, "ipfs://s2-m1"), &Symbol::new(&env, "ipfs"));
 
     // --- S3: milestone 0 Disputed
     make_shipment(&client, &env, "UPG-003", &buyer, &supplier, &logistics, &arbiter, &token_id, amount);
     let id3 = String::from_str(&env, "UPG-003");
-    client.submit_proof(&supplier, &id3, &0, &String::from_str(&env, "ipfs://s3-m0"));
+    client.submit_proof(&supplier, &id3, &0, &String::from_str(&env, "ipfs://s3-m0"), &Symbol::new(&env, "ipfs"));
     client.raise_dispute(&buyer, &id3, &0);
 
     // Snapshot pre-upgrade values

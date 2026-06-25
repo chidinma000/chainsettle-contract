@@ -4,7 +4,7 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
+    testutils::{Address as _, Ledger as _, Symbol},
     token, vec, Address, BytesN, Env, String,
 };
 use std::format;
@@ -254,7 +254,8 @@ fn test_full_shipment_lifecycle() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     client.submit_proof(
@@ -262,7 +263,8 @@ fn test_full_shipment_lifecycle() {
         &shipment_id,
         &1,
         &String::from_str(&t.env, "ipfs://t"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &1);
 
     client.submit_proof(
@@ -270,7 +272,8 @@ fn test_full_shipment_lifecycle() {
         &shipment_id,
         &2,
         &String::from_str(&t.env, "ipfs://v"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &2);
 
     let shipment = client.get_shipment(&shipment_id);
@@ -309,7 +312,8 @@ fn test_full_lifecycle_with_dispute() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d0"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     let m0_payment = total_amount * 25 / 100;
@@ -325,7 +329,8 @@ fn test_full_lifecycle_with_dispute() {
         &shipment_id,
         &1,
         &String::from_str(&t.env, "ipfs://d1"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.raise_dispute(&t.buyer, &shipment_id, &1);
     client.resolve_dispute(&t.arbiter, &shipment_id, &1, &false);
 
@@ -335,7 +340,8 @@ fn test_full_lifecycle_with_dispute() {
         &shipment_id,
         &1,
         &String::from_str(&t.env, "ipfs://d1-resub"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &1);
 
     let m1_payment = total_amount * 50 / 100;
@@ -351,7 +357,8 @@ fn test_full_lifecycle_with_dispute() {
         &shipment_id,
         &2,
         &String::from_str(&t.env, "ipfs://d2"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &2);
 
     let shipment = client.get_shipment(&shipment_id);
@@ -423,7 +430,8 @@ fn test_cancel_partial_confirmed() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     let buyer_balance_after_confirm = token_client.balance(&t.buyer);
@@ -466,7 +474,8 @@ fn test_cancel_blocked_by_dispute() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.raise_dispute(&t.buyer, &shipment_id, &0);
     client.cancel_shipment(&t.buyer, &shipment_id);
 }
@@ -591,7 +600,8 @@ fn test_pause_blocks_confirm_milestone() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
 
     client.pause(&t.buyer);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
@@ -707,7 +717,8 @@ fn test_top_up_proportionally_increases_milestone_payments() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     let expected_payment = (initial_amount + top_up) * 25 / 100; // 500_000_000
@@ -741,7 +752,8 @@ fn test_top_up_disallowed_after_completion() {
             &shipment_id,
             &i,
             &String::from_str(&t.env, "ipfs://x"),
-        );
+        
+            &Symbol::new(&t.env, "ipfs"),);
         client.confirm_milestone(&t.buyer, &shipment_id, &i);
     }
 
@@ -1050,7 +1062,8 @@ fn test_existing_shipment_works_after_post_creation_blacklist() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     assert_eq!(
         client.get_milestone(&shipment_id, &0).status,
         MilestoneStatus::ProofSubmitted
@@ -1080,13 +1093,15 @@ fn test_dispute_limit_blocks_second() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.submit_proof(
         &t.supplier,
         &shipment_id,
         &1,
         &String::from_str(&t.env, "ipfs://t"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.raise_dispute(&t.buyer, &shipment_id, &0);
     assert_eq!(client.get_shipment(&shipment_id).open_dispute_count, 1);
     client.raise_dispute(&t.buyer, &shipment_id, &1);
@@ -1114,7 +1129,8 @@ fn test_dispute_limit_frees_slot_on_resolution() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.raise_dispute(&t.buyer, &shipment_id, &0);
     assert_eq!(client.get_shipment(&shipment_id).open_dispute_count, 1);
     client.resolve_dispute(&t.arbiter, &shipment_id, &0, &false);
@@ -1145,13 +1161,15 @@ fn test_dispute_limit_two_allows_two_concurrent_disputes() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.submit_proof(
         &t.supplier,
         &shipment_id,
         &1,
         &String::from_str(&t.env, "ipfs://t"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
 
     client.raise_dispute(&t.buyer, &shipment_id, &0);
     client.raise_dispute(&t.buyer, &shipment_id, &1);
@@ -1239,7 +1257,8 @@ fn test_dispute_cooldown_enforced() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.raise_dispute(&t.buyer, &shipment_id, &0);
     // Arbiter rejects — milestone goes back to Pending, cooldown starts.
     client.resolve_dispute(&t.arbiter, &shipment_id, &0, &false);
@@ -1250,7 +1269,8 @@ fn test_dispute_cooldown_enforced() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d2"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
 
     // Immediately trying to raise another dispute should fail (cooldown not elapsed).
     // We test this in the should_panic test below.
@@ -1301,7 +1321,8 @@ fn test_dispute_cooldown_blocks_early_redispute() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.raise_dispute(&t.buyer, &shipment_id, &0);
     client.resolve_dispute(&t.arbiter, &shipment_id, &0, &false);
 
@@ -1311,7 +1332,8 @@ fn test_dispute_cooldown_blocks_early_redispute() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d2"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.raise_dispute(&t.buyer, &shipment_id, &0);
 }
 
@@ -1340,7 +1362,8 @@ fn test_no_cooldown_allows_immediate_redispute() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.raise_dispute(&t.buyer, &shipment_id, &0);
     client.resolve_dispute(&t.arbiter, &shipment_id, &0, &false);
 
@@ -1349,7 +1372,8 @@ fn test_no_cooldown_allows_immediate_redispute() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d2"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     // Should succeed immediately with no cooldown.
     client.raise_dispute(&t.buyer, &shipment_id, &0);
     assert_eq!(
@@ -1392,7 +1416,8 @@ fn test_cooldown_updated_on_resolve() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.raise_dispute(&t.buyer, &shipment_id, &0);
 
     t.env.ledger().set_sequence_number(10);
@@ -1461,7 +1486,8 @@ fn test_transfer_buyer_new_buyer_can_confirm() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     // New buyer confirms — should succeed.
     client.confirm_milestone(&t.buyer2, &shipment_id, &0);
 
@@ -1499,7 +1525,8 @@ fn test_transfer_buyer_old_buyer_cannot_confirm_after_transfer() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     // Old buyer tries to confirm — must be rejected.
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 }
@@ -1529,7 +1556,8 @@ fn test_transfer_buyer_blocked_by_dispute() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.raise_dispute(&t.buyer, &shipment_id, &0);
 
     // Transfer while dispute is open — must panic.
@@ -1568,7 +1596,8 @@ fn test_transfer_supplier_success() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     assert_eq!(
@@ -1629,7 +1658,8 @@ fn test_transfer_supplier_blocked_by_dispute() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.raise_dispute(&t.buyer, &shipment_id, &0);
 
     client.transfer_supplier(&t.supplier, &shipment_id, &new_supplier);
@@ -1664,7 +1694,8 @@ fn test_non_sequential_baseline() {
         &shipment_id,
         &2,
         &String::from_str(&t.env, "ipfs://v"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     assert_eq!(
         client.get_milestone(&shipment_id, &2).status,
         MilestoneStatus::ProofSubmitted
@@ -1697,7 +1728,8 @@ fn test_parallel_mode_allows_any_order() {
         &shipment_id,
         &2,
         &String::from_str(&t.env, "ipfs://v"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &2);
 
     client.submit_proof(
@@ -1705,7 +1737,8 @@ fn test_parallel_mode_allows_any_order() {
         &shipment_id,
         &1,
         &String::from_str(&t.env, "ipfs://t"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &1);
 
     client.submit_proof(
@@ -1713,7 +1746,8 @@ fn test_parallel_mode_allows_any_order() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     assert_eq!(
@@ -1798,7 +1832,8 @@ fn test_fee_deducted_on_confirm_milestone() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     let gross = total_amount * 25 / 100; // 250_000_000
@@ -1843,7 +1878,8 @@ fn test_no_fee_config_backward_compatible() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     // No fee config — supplier gets full gross payment.
@@ -1889,7 +1925,8 @@ fn test_holdback_happy_path() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     // Payment should be held — supplier balance still 0.
@@ -1935,7 +1972,8 @@ fn test_no_holdback_immediate_transfer() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     assert_eq!(token_client.balance(&t.supplier), 1_000_000_000 * 25 / 100);
@@ -1974,7 +2012,8 @@ fn test_holdback_early_dispute_cancels_hold() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     assert_eq!(
@@ -2026,19 +2065,22 @@ fn test_batch_confirm_milestones_full() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.submit_proof(
         &t.logistics,
         &shipment_id,
         &1,
         &String::from_str(&t.env, "ipfs://t"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.submit_proof(
         &t.supplier,
         &shipment_id,
         &2,
         &String::from_str(&t.env, "ipfs://v"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
 
     client.batch_confirm_milestones(&t.buyer, &shipment_id, &vec![&t.env, 0u32, 1u32, 2u32]);
 
@@ -2074,7 +2116,8 @@ fn test_batch_confirm_single_element() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.batch_confirm_milestones(&t.buyer, &shipment_id, &vec![&t.env, 0u32]);
 
     assert_eq!(
@@ -2135,7 +2178,8 @@ fn test_batch_confirm_partial_invalid_reverts() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     // Index 1 has no proof — must revert entirely.
     client.batch_confirm_milestones(&t.buyer, &shipment_id, &vec![&t.env, 0u32, 1u32]);
 }
@@ -2180,7 +2224,8 @@ fn test_multisig_both_buyers_must_confirm() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
 
     // Either buyer can confirm independently in this implementation.
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
@@ -2216,7 +2261,8 @@ fn test_multisig_duplicate_approval_rejected() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     // Supplier is not a buyer — must be rejected.
     client.confirm_milestone(&t.supplier, &shipment_id, &0);
 }
@@ -2254,7 +2300,8 @@ fn test_multisig_minority_veto_dispute() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     // buyer2 raises a dispute — only one co-buyer needed.
     client.raise_dispute(&t.buyer2, &shipment_id, &0);
 
@@ -2368,7 +2415,8 @@ fn test_amendment_confirmed_milestone_rejected() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     client.propose_amendment(
@@ -2476,7 +2524,8 @@ fn test_payment_arithmetic_1e18_non_integer_division() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://a"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     client.submit_proof(
@@ -2484,7 +2533,8 @@ fn test_payment_arithmetic_1e18_non_integer_division() {
         &shipment_id,
         &1,
         &String::from_str(&t.env, "ipfs://b"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &1);
 
     client.submit_proof(
@@ -2492,7 +2542,8 @@ fn test_payment_arithmetic_1e18_non_integer_division() {
         &shipment_id,
         &2,
         &String::from_str(&t.env, "ipfs://c"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &2);
 
     // Compute expected per-milestone payments using integer division semantics.
@@ -2561,7 +2612,8 @@ fn test_payment_percent_extremes_99_1_no_overflow() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://x"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     client.submit_proof(
@@ -2569,7 +2621,8 @@ fn test_payment_percent_extremes_99_1_no_overflow() {
         &shipment_id,
         &1,
         &String::from_str(&t.env, "ipfs://y"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &1);
 
     let p0 = total_amount * 99 / 100;
@@ -2622,7 +2675,8 @@ fn test_deadline_cancellation_success() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     t.env.ledger().set_sequence_number(deadline + 1);
 
     let buyer_balance_before = token_client.balance(&t.buyer);
@@ -2676,7 +2730,8 @@ fn test_deadline_cancellation_too_early() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.supplier_cancel(&t.supplier, &shipment_id);
 }
 
@@ -2727,7 +2782,8 @@ fn test_fee_deducted_on_dispute_resolve_approve() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.raise_dispute(&t.buyer, &shipment_id, &0);
     client.resolve_dispute(&t.arbiter, &shipment_id, &0, &true);
 
@@ -2793,7 +2849,8 @@ fn test_get_completion_percentage_partial_one_milestone() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     // Should return 25%
@@ -2826,7 +2883,8 @@ fn test_get_completion_percentage_partial_two_milestones() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     // Confirm second milestone (50% cumulative = 75% total)
@@ -2835,7 +2893,8 @@ fn test_get_completion_percentage_partial_two_milestones() {
         &shipment_id,
         &1,
         &String::from_str(&t.env, "ipfs://t"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &1);
 
     // Should return 75%
@@ -2868,7 +2927,8 @@ fn test_get_completion_percentage_full_completion() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     client.submit_proof(
@@ -2876,7 +2936,8 @@ fn test_get_completion_percentage_full_completion() {
         &shipment_id,
         &1,
         &String::from_str(&t.env, "ipfs://t"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &1);
 
     client.submit_proof(
@@ -2884,7 +2945,8 @@ fn test_get_completion_percentage_full_completion() {
         &shipment_id,
         &2,
         &String::from_str(&t.env, "ipfs://v"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &2);
 
     // Should return 100%
@@ -2920,7 +2982,8 @@ fn test_get_completion_percentage_zero_released() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     // (25 * 100) / 100 = 25%
@@ -3039,7 +3102,8 @@ fn test_shipment_cancelled_partial_refund_event_data() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     let buyer_before = token_client.balance(&t.buyer);
@@ -3080,7 +3144,8 @@ fn test_milestone_confirmed_event_includes_supplier_and_ledger() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
 
     let supplier_before = token_client.balance(&t.supplier);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
@@ -3127,13 +3192,15 @@ fn test_batch_confirm_milestone_confirmed_event_includes_supplier() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.submit_proof(
         &t.logistics,
         &shipment_id,
         &1,
         &String::from_str(&t.env, "ipfs://t"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
 
     let supplier_before = token_client.balance(&t.supplier);
     client.batch_confirm_milestones(&t.buyer, &shipment_id, &vec![&t.env, 0u32, 1u32]);
@@ -3208,7 +3275,8 @@ fn test_concurrent_100_shipments_stress() {
             &shipment_id,
             &0,
             &String::from_str(&t.env, "ipfs://proof0"),
-        );
+        
+            &Symbol::new(&t.env, "ipfs"),);
     }
 
     // Milestone 1: forward order (0, 1, 2, ..., 99)
@@ -3219,7 +3287,8 @@ fn test_concurrent_100_shipments_stress() {
             &shipment_id,
             &1,
             &String::from_str(&t.env, "ipfs://proof1"),
-        );
+        
+            &Symbol::new(&t.env, "ipfs"),);
     }
 
     // Milestone 2: alternating order (0, 99, 1, 98, 2, 97, ...)
@@ -3237,7 +3306,8 @@ fn test_concurrent_100_shipments_stress() {
             &shipment_id,
             &2,
             &String::from_str(&t.env, "ipfs://proof2"),
-        );
+        
+            &Symbol::new(&t.env, "ipfs"),);
     }
 
     // Phase 3: Confirm milestones in random/interleaved order
@@ -3395,9 +3465,9 @@ fn test_concurrent_shipments_with_different_amounts() {
             let proof = String::from_str(&t.env, &format!("ipfs://proof{}", milestone_idx));
 
             if milestone_idx == 1 {
-                client.submit_proof(&t.logistics, &shipment_id, &milestone_idx, &proof);
+                client.submit_proof(&t.logistics, &shipment_id, &milestone_idx, &proof, &Symbol::new(&t.env, "ipfs"));
             } else {
-                client.submit_proof(&supplier, &shipment_id, &milestone_idx, &proof);
+                client.submit_proof(&supplier, &shipment_id, &milestone_idx, &proof, &Symbol::new(&t.env, "ipfs"));
             }
         }
 
@@ -3473,7 +3543,8 @@ fn test_concurrent_shipments_no_storage_clobbering() {
             &shipment_id,
             &0,
             &String::from_str(&t.env, "ipfs://m0"),
-        );
+        
+            &Symbol::new(&t.env, "ipfs"),);
     }
 
     // Verify each shipment has independent state
@@ -3539,7 +3610,8 @@ fn test_concurrent_shipments_no_storage_clobbering() {
                 &shipment_id,
                 &m,
                 &String::from_str(&t.env, &format!("ipfs://m{}", m)),
-            );
+            
+                &Symbol::new(&t.env, "ipfs"),);
             client.confirm_milestone(&t.buyer, &shipment_id, &m);
         }
     }
@@ -3618,7 +3690,8 @@ fn test_advance_approved_deducted_on_confirm() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     // On confirm, supplier should receive milestone_payment - advance.
@@ -3854,7 +3927,8 @@ fn test_advance_multi_milestone_deductions() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://m0"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &0);
 
     // Supplier gets m0_payment - advance0 extra.
@@ -3869,7 +3943,8 @@ fn test_advance_multi_milestone_deductions() {
         &shipment_id,
         &1,
         &String::from_str(&t.env, "ipfs://m1"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &1);
 
     assert_eq!(
@@ -3883,7 +3958,8 @@ fn test_advance_multi_milestone_deductions() {
         &shipment_id,
         &2,
         &String::from_str(&t.env, "ipfs://m2"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
     client.confirm_milestone(&t.buyer, &shipment_id, &2);
 
     // Total should be full amount.
@@ -3926,7 +4002,8 @@ fn test_advance_rejected_for_wrong_milestone_status() {
         &shipment_id,
         &0,
         &String::from_str(&t.env, "ipfs://d"),
-    );
+    
+        &Symbol::new(&t.env, "ipfs"),);
 
     // Advance on non-Pending milestone should be rejected.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -4154,7 +4231,8 @@ fn test_ttl_completed_shipment_persists() {
             &shipment_id,
             &i,
             &String::from_str(&t.env, &std::format!("ipfs://m{}", i)),
-        );
+        
+            &Symbol::new(&t.env, "ipfs"),);
         client.confirm_milestone(&t.buyer, &shipment_id, &i);
     }
 

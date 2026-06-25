@@ -4,7 +4,7 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
+    testutils::{Address as _, Ledger as _, Symbol},
     token, vec, Address, Env, String as SorobanString,
 };
 use std::fs;
@@ -207,7 +207,7 @@ fn benchmark_submit_proof(milestone_count: u32) -> BenchmarkResult {
     let proof_hash = SorobanString::from_str(&setup.env, "ipfs://QmTest123");
 
     let instructions = measure_instructions(&setup.env, || {
-        client.submit_proof(&setup.supplier, &shipment_id, &0, &proof_hash);
+        client.submit_proof(&setup.supplier, &shipment_id, &0, &proof_hash, &Symbol::new(&env, "ipfs"));
     });
 
     BenchmarkResult {
@@ -242,7 +242,7 @@ fn benchmark_confirm_milestone(milestone_count: u32) -> BenchmarkResult {
     );
 
     let proof_hash = SorobanString::from_str(&setup.env, "ipfs://QmTest123");
-    client.submit_proof(&setup.supplier, &shipment_id, &0, &proof_hash);
+    client.submit_proof(&setup.supplier, &shipment_id, &0, &proof_hash, &Symbol::new(&env, "ipfs"));
 
     let instructions = measure_instructions(&setup.env, || {
         client.confirm_milestone(&setup.buyer, &shipment_id, &0);
@@ -280,7 +280,7 @@ fn benchmark_raise_dispute(milestone_count: u32) -> BenchmarkResult {
     );
 
     let proof_hash = SorobanString::from_str(&setup.env, "ipfs://QmTest123");
-    client.submit_proof(&setup.supplier, &shipment_id, &0, &proof_hash);
+    client.submit_proof(&setup.supplier, &shipment_id, &0, &proof_hash, &Symbol::new(&env, "ipfs"));
 
     let instructions = measure_instructions(&setup.env, || {
         client.raise_dispute(&setup.buyer, &shipment_id, &0);
@@ -318,7 +318,7 @@ fn benchmark_resolve_dispute(milestone_count: u32) -> BenchmarkResult {
     );
 
     let proof_hash = SorobanString::from_str(&setup.env, "ipfs://QmTest123");
-    client.submit_proof(&setup.supplier, &shipment_id, &0, &proof_hash);
+    client.submit_proof(&setup.supplier, &shipment_id, &0, &proof_hash, &Symbol::new(&env, "ipfs"));
     client.raise_dispute(&setup.buyer, &shipment_id, &0);
 
     let instructions = measure_instructions(&setup.env, || {

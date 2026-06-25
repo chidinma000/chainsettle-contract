@@ -289,6 +289,11 @@ pub enum DataKey {
     AdvanceRequest(String, u32),
     /// Contract-level max advance percent (default 30).
     MaxAdvancePercent,
+    /// Allowed proof content types per milestone: (shipment_id, milestone_index) -> Vec<Symbol>.
+    /// Empty list means any type is accepted.
+    MilestoneProofWhitelist(String, u32),
+    /// Declared proof content type recorded at submission time: (shipment_id, milestone_index) -> Symbol.
+    SubmittedProofType(String, u32),
 }
 
 // ============================================================
@@ -327,6 +332,8 @@ pub enum ChainSettleError {
     AdvanceExceedsMax = 27,
     AdvanceNotRequested = 28,
     AdvanceAlreadyApproved = 29,
+    ProofTypeNotAllowed = 30,
+    RebalanceNotAllowed = 31,
 }
 
 // ============================================================
@@ -1116,7 +1123,6 @@ impl ChainSettleContract {
     /// Disallowed once the shipment is Completed or Cancelled.
     pub fn top_up_escrow(env: Env, buyer: Address, shipment_id: String, additional_amount: i128) {
         Self::assert_not_paused(&env);
-        buyer.require_auth();
 
         if additional_amount <= 0 {
             panic!("additional_amount must be greater than zero");
@@ -1128,8 +1134,7 @@ impl ChainSettleContract {
             panic!("top-up disallowed: shipment is not active");
         }
 
-        // Only a registered buyer may top up.
-        Self::assert_is_buyer(&shipment, &buyer);
+        Self::require_buyer_auth(&shipment, &buyer);
 
         let token_client = token::Client::new(&env, &shipment.token);
         token_client.transfer(&buyer, &env.current_contract_address(), &additional_amount);
@@ -1148,6 +1153,74 @@ impl ChainSettleContract {
     }
 
     // ----------------------------------------------------------
+    // MILESTONE PERCENTAGE REBALANCING
+    // ----------------------------------------------------------
+
+    /// Buyer rebalances milestone payment percentages before any proof has been submitted.
+    /// All milestones must still be in Pending status (no proof submitted on any of them).
+    /// The new percentages must sum to 100 and each must meet the minimum threshold.
+    pub fn rebalance_milestones(
+        env: Env,
+        buyer: Address,
+        shipment_id: String,
+        new_percents: Vec<u32>,
+    ) {
+        env.storage().instance().extend_ttl(100_000, 6_300_000);
+        Self::assert_not_paused(&env);
+
+        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+
+        if shipment.status != ShipmentStatus::Active {
+            panic!("shipment is not active");
+        }
+        Self::require_buyer_auth(&shipment, &buyer);
+
+        if new_percents.len() != shipment.milestones.len() {
+            panic!("percent count must match milestone count");
+        }
+
+        // Rebalancing is only permitted before any proof has been submitted.
+        for i in 0..shipment.milestones.len() {
+            let m = shipment.milestones.get(i).unwrap();
+            if m.status != MilestoneStatus::Pending {
+                panic!("cannot rebalance: at least one milestone is no longer pending");
+            }
+        }
+
+        let min_pct: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinMilestonePercent)
+            .unwrap_or(5u32);
+        let mut total: u32 = 0;
+        for i in 0..new_percents.len() {
+            let pct = new_percents.get(i).unwrap();
+            if pct < min_pct {
+                panic!("InvalidPercentages");
+            }
+            total += pct;
+        }
+        if total != 100 {
+            panic!("milestone percentages must sum to 100");
+        }
+
+        for i in 0..new_percents.len() {
+            let mut m = shipment.milestones.get(i).unwrap();
+            m.payment_percent = new_percents.get(i).unwrap();
+            shipment.milestones.set(i, m);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
+
+        env.events().publish(
+            (Symbol::new(&env, "milestones_rebalanced"), shipment_id.clone()),
+            (buyer, new_percents),
+        );
+    }
+
+    // ----------------------------------------------------------
     // SUPPLIER ADVANCE PAYMENT
     // ----------------------------------------------------------
 
@@ -1162,16 +1235,13 @@ impl ChainSettleContract {
     ) {
         env.storage().instance().extend_ttl(100_000, 6_300_000);
         Self::assert_not_paused(&env);
-        caller.require_auth();
 
         let shipment = Self::get_shipment_internal(&env, &shipment_id);
 
         if shipment.status != ShipmentStatus::Active {
             panic!("shipment is not active");
         }
-        if caller != shipment.supplier {
-            panic!("unauthorized");
-        }
+        Self::require_supplier_auth(&shipment, &caller);
         if milestone_index as usize >= shipment.milestones.len() as usize {
             panic!("invalid milestone index");
         }
@@ -1225,14 +1295,13 @@ impl ChainSettleContract {
     pub fn approve_advance(env: Env, buyer: Address, shipment_id: String, milestone_index: u32) {
         env.storage().instance().extend_ttl(100_000, 6_300_000);
         Self::assert_not_paused(&env);
-        buyer.require_auth();
 
         let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
 
         if shipment.status != ShipmentStatus::Active {
             panic!("shipment is not active");
         }
-        Self::assert_is_buyer(&shipment, &buyer);
+        Self::require_buyer_auth(&shipment, &buyer);
 
         if milestone_index as usize >= shipment.milestones.len() as usize {
             panic!("invalid milestone index");
@@ -1292,6 +1361,76 @@ impl ChainSettleContract {
     }
 
     // ----------------------------------------------------------
+    // PROOF CONTENT-TYPE WHITELIST
+    // ----------------------------------------------------------
+
+    /// Buyer sets the allowed proof content-type identifiers for a specific milestone.
+    /// Must be called before proof is submitted (milestone must be Pending).
+    /// Pass an empty Vec to remove the whitelist and allow any type.
+    /// Example types: Symbol::new(&env, "ipfs"), Symbol::new(&env, "sha256"), Symbol::new(&env, "url").
+    pub fn set_proof_whitelist(
+        env: Env,
+        buyer: Address,
+        shipment_id: String,
+        milestone_index: u32,
+        allowed_types: Vec<Symbol>,
+    ) {
+        env.storage().instance().extend_ttl(100_000, 6_300_000);
+        Self::assert_not_paused(&env);
+
+        let shipment = Self::get_shipment_internal(&env, &shipment_id);
+
+        if shipment.status != ShipmentStatus::Active {
+            panic!("shipment is not active");
+        }
+        Self::require_buyer_auth(&shipment, &buyer);
+
+        if milestone_index as usize >= shipment.milestones.len() as usize {
+            panic!("invalid milestone index");
+        }
+
+        let milestone = shipment.milestones.get(milestone_index).unwrap();
+        if milestone.status != MilestoneStatus::Pending {
+            panic!("cannot set whitelist: proof already submitted for this milestone");
+        }
+
+        let key = DataKey::MilestoneProofWhitelist(shipment_id.clone(), milestone_index);
+        env.storage().persistent().set(&key, &allowed_types);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, 100_000, 6_300_000);
+
+        env.events().publish(
+            (Symbol::new(&env, "proof_whitelist_set"), shipment_id.clone()),
+            (milestone_index, buyer),
+        );
+    }
+
+    /// Returns the submitted proof content type for a milestone, or None if not yet submitted.
+    pub fn get_milestone_proof_type(
+        env: Env,
+        shipment_id: String,
+        milestone_index: u32,
+    ) -> Option<Symbol> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SubmittedProofType(shipment_id, milestone_index))
+    }
+
+    /// Returns the proof content-type whitelist for a milestone.
+    /// An empty Vec means any type is accepted.
+    pub fn get_proof_whitelist(
+        env: Env,
+        shipment_id: String,
+        milestone_index: u32,
+    ) -> Vec<Symbol> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MilestoneProofWhitelist(shipment_id, milestone_index))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    // ----------------------------------------------------------
     // SUBMIT PROOF
     // ----------------------------------------------------------
 
@@ -1301,10 +1440,10 @@ impl ChainSettleContract {
         shipment_id: String,
         milestone_index: u32,
         proof_hash: String,
+        proof_type: Symbol,
     ) {
         env.storage().instance().extend_ttl(100_000, 6_300_000);
         Self::assert_not_paused(&env);
-        caller.require_auth();
 
         let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
 
@@ -1320,8 +1459,27 @@ impl ChainSettleContract {
         if milestone.status != MilestoneStatus::Pending {
             panic!("milestone is not in pending status");
         }
-        if caller != shipment.supplier && caller != shipment.logistics {
-            panic!("unauthorized");
+        Self::require_supplier_or_logistics_auth(&shipment, &caller);
+
+        // Validate proof_type against per-milestone whitelist (if one is set).
+        let whitelist_key = DataKey::MilestoneProofWhitelist(shipment_id.clone(), milestone_index);
+        if let Some(whitelist) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<Symbol>>(&whitelist_key)
+        {
+            if whitelist.len() > 0 {
+                let mut allowed = false;
+                for i in 0..whitelist.len() {
+                    if whitelist.get(i).unwrap() == proof_type {
+                        allowed = true;
+                        break;
+                    }
+                }
+                if !allowed {
+                    panic!("proof type not in whitelist");
+                }
+            }
         }
 
         // Sequential mode: previous milestone must be complete.
@@ -1351,6 +1509,13 @@ impl ChainSettleContract {
             &current_ledger,
         );
 
+        // Record the declared proof content type for off-chain and on-chain querying.
+        let type_key = DataKey::SubmittedProofType(shipment_id.clone(), milestone_index);
+        env.storage().persistent().set(&type_key, &proof_type);
+        env.storage()
+            .persistent()
+            .extend_ttl(&type_key, 100_000, 6_300_000);
+
         let event_topic = if is_resubmission {
             Symbol::new(&env, "proof_resubmitted")
         } else {
@@ -1361,6 +1526,7 @@ impl ChainSettleContract {
             (
                 milestone_index,
                 proof_hash_for_event,
+                proof_type,
                 caller,
                 current_ledger,
             ),
@@ -1374,14 +1540,13 @@ impl ChainSettleContract {
     pub fn confirm_milestone(env: Env, buyer: Address, shipment_id: String, milestone_index: u32) {
         env.storage().instance().extend_ttl(100_000, 6_300_000);
         Self::assert_not_paused(&env);
-        buyer.require_auth();
 
         let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
 
         if shipment.status != ShipmentStatus::Active {
             panic!("shipment is not active");
         }
-        Self::assert_is_buyer(&shipment, &buyer);
+        Self::require_buyer_auth(&shipment, &buyer);
 
         if milestone_index as usize >= shipment.milestones.len() as usize {
             panic!("invalid milestone index");
@@ -1774,14 +1939,13 @@ impl ChainSettleContract {
 
     pub fn raise_dispute(env: Env, buyer: Address, shipment_id: String, milestone_index: u32) {
         Self::assert_not_paused(&env);
-        buyer.require_auth();
 
         let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
 
         if shipment.status != ShipmentStatus::Active {
             panic!("shipment is not active");
         }
-        Self::assert_is_buyer(&shipment, &buyer);
+        Self::require_buyer_auth(&shipment, &buyer);
 
         // Dispute cooldown check.
         if shipment.dispute_cooldown_ledgers > 0 {
@@ -1880,16 +2044,13 @@ impl ChainSettleContract {
         approve: bool,
     ) {
         Self::assert_not_paused(&env);
-        arbiter.require_auth();
 
         let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
 
         if shipment.status != ShipmentStatus::Active {
             panic!("shipment is not active");
         }
-        if arbiter != shipment.arbiter {
-            panic!("unauthorized");
-        }
+        Self::require_arbiter_auth(&shipment, &arbiter);
 
         let mut milestone = shipment.milestones.get(milestone_index).unwrap();
         if milestone.status != MilestoneStatus::Disputed {
@@ -3011,6 +3172,43 @@ impl ChainSettleContract {
 
     fn assert_is_buyer(shipment: &Shipment, addr: &Address) {
         if !Self::is_buyer(shipment, addr) {
+            panic!("unauthorized");
+        }
+    }
+
+    // ----------------------------------------------------------
+    // PERMISSION GUARDS
+    // Combine require_auth() with role verification in one call
+    // so every state-changing function has a single authoritative
+    // check rather than scattered inline pairs.
+    // ----------------------------------------------------------
+
+    /// Caller must be one of the shipment's registered buyers.
+    fn require_buyer_auth(shipment: &Shipment, buyer: &Address) {
+        buyer.require_auth();
+        Self::assert_is_buyer(shipment, buyer);
+    }
+
+    /// Caller must be the shipment's supplier.
+    fn require_supplier_auth(shipment: &Shipment, caller: &Address) {
+        caller.require_auth();
+        if *caller != shipment.supplier {
+            panic!("unauthorized");
+        }
+    }
+
+    /// Caller must be the shipment's supplier or logistics provider.
+    fn require_supplier_or_logistics_auth(shipment: &Shipment, caller: &Address) {
+        caller.require_auth();
+        if *caller != shipment.supplier && *caller != shipment.logistics {
+            panic!("unauthorized");
+        }
+    }
+
+    /// Caller must be the shipment's designated arbiter.
+    fn require_arbiter_auth(shipment: &Shipment, arbiter: &Address) {
+        arbiter.require_auth();
+        if *arbiter != shipment.arbiter {
             panic!("unauthorized");
         }
     }

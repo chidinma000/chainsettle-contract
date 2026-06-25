@@ -7,8 +7,7 @@
 use super::*;
 use soroban_sdk::{
     testutils::Address as _,
-    token, vec, Address, Env, String,
-};
+    token, vec, Address, Env, String,, Symbol};
 
 // Resolution order: deliberately non-sequential to catch cross-shipment contamination.
 const RESOLUTION_ORDER: [usize; 10] = [5, 2, 8, 1, 6, 0, 9, 3, 7, 4];
@@ -67,7 +66,7 @@ fn create_and_dispute(
         &amount, &three_milestone_vec(env), &false, &0,
     );
     let proof = String::from_str(env, "ipfs://concurrent-proof");
-    client.submit_proof(supplier, &id, &0, &proof);
+    client.submit_proof(supplier, &id, &0, &proof, &Symbol::new(&env, "ipfs"));
     client.raise_dispute(buyer, &id, &0);
 }
 
