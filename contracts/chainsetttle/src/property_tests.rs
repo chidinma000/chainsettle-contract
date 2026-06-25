@@ -234,7 +234,7 @@ mod contract_prop_tests {
         ChainSettleContract, ChainSettleContractClient, Milestone, MilestoneMode, MilestoneStatus,
         ShipmentOptions,
     };
-    use soroban_sdk::{testutils::Address as _, token, vec, Address, Env, String};
+    use soroban_sdk::{testutils::Address as _, token, vec, Address, Env, String, Symbol};
 
     fn make_env_and_client() -> (Env, Address, Address, Address, Address, Address, Address) {
         let env = Env::default();
@@ -336,11 +336,11 @@ mod contract_prop_tests {
             let sid = String::from_str(&env, "PROP-001");
 
             if confirm_m0 {
-                client.submit_proof(&supplier, &sid, &0, &String::from_str(&env, "qm0"));
+                client.submit_proof(&supplier, &sid, &0, &String::from_str(&env, "qm0"), &Symbol::new(&env, "ipfs"));
                 client.confirm_milestone(&buyer, &sid, &0);
             }
             if confirm_m1 {
-                client.submit_proof(&supplier, &sid, &1, &String::from_str(&env, "qm1"));
+                client.submit_proof(&supplier, &sid, &1, &String::from_str(&env, "qm1"), &Symbol::new(&env, "ipfs"));
                 client.confirm_milestone(&buyer, &sid, &1);
             }
 
@@ -360,7 +360,7 @@ mod contract_prop_tests {
             let client = ChainSettleContractClient::new(&env, &contract_id);
             let sid = String::from_str(&env, "PROP-002");
 
-            client.submit_proof(&supplier, &sid, &0, &String::from_str(&env, "qm0"));
+            client.submit_proof(&supplier, &sid, &0, &String::from_str(&env, "qm0"), &Symbol::new(&env, "ipfs"));
             client.confirm_milestone(&buyer, &sid, &0);
 
             let ship = client.get_shipment(&sid);
@@ -377,7 +377,7 @@ mod contract_prop_tests {
             let client = ChainSettleContractClient::new(&env, &contract_id);
             let sid = String::from_str(&env, "PROP-003");
 
-            client.submit_proof(&supplier, &sid, &0, &String::from_str(&env, "qm_first"));
+            client.submit_proof(&supplier, &sid, &0, &String::from_str(&env, "qm_first"), &Symbol::new(&env, "ipfs"));
             client.raise_dispute(&buyer, &sid, &0);
             client.resolve_dispute(&arbiter, &sid, &0, &false);
 
@@ -385,7 +385,7 @@ mod contract_prop_tests {
             let ms = ship.milestones.get(0).unwrap();
             prop_assert_eq!(ms.status, MilestoneStatus::Pending);
 
-            client.submit_proof(&supplier, &sid, &0, &String::from_str(&env, "qm_second"));
+            client.submit_proof(&supplier, &sid, &0, &String::from_str(&env, "qm_second"), &Symbol::new(&env, "ipfs"));
 
             let ship2 = client.get_shipment(&sid);
             let ms2 = ship2.milestones.get(0).unwrap();
