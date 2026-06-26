@@ -141,6 +141,9 @@ pub struct Shipment {
     pub logistics_fee_bps: u32,
     /// Ledger at which the shipment expires (None = no expiry).
     pub expires_at_ledger: Option<u32>,
+    /// 32-byte provenance metadata hash for the NFT mint hook event (Issue #104).
+    /// Zero-bytes means no metadata hash; set at shipment creation via ShipmentOptions.
+    pub metadata_hash: BytesN<32>,
 }
 
 /// Cancellation policy stored separately (keeps Shipment within the contracttype field limit).
@@ -209,6 +212,9 @@ pub struct ShipmentOptions {
     pub supplier_collateral: i128,
     /// Ledger at which shipment expires (None = no expiry).
     pub expires_at_ledger: Option<u32>,
+    /// 32-byte provenance metadata hash embedded in the NFT mint hook event on final completion.
+    /// Pass `BytesN::from_array(&env, &[0u8; 32])` if no metadata hash is needed.
+    pub metadata_hash: BytesN<32>,
 }
 
 /// All parameters needed to create a single shipment in a batch call.
@@ -366,6 +372,8 @@ pub enum DataKey {
     YieldDeposited(Address),
     /// Supplier collateral amount for a shipment.
     SupplierCollateral(String),
+    /// Whether the NFT mint hook event is enabled (admin-configured, default false).
+    NftHookEnabled,
 }
 
 // ============================================================
@@ -793,6 +801,40 @@ impl ChainSettleContract {
             .unwrap_or(30)
     }
 
+    // ----------------------------------------------------------
+    // ADMIN: NFT MINT HOOK (Issue #104)
+    // ----------------------------------------------------------
+
+    /// Enable or disable the NFT mint hook event emitted on final milestone completion.
+    /// When enabled, a `nft_mint_hook` event is published on shipment completion so an
+    /// off-chain NFT minting service can issue a provenance certificate to the buyer.
+    /// The event is purely informational — no state change or external contract call.
+    /// Admin only. Default: disabled.
+    pub fn set_nft_hook_enabled(env: Env, admin: Address, enabled: bool) {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::NftHookEnabled, &enabled);
+        Self::append_admin_action(
+            &env,
+            Symbol::new(&env, "set_nft_hook_enabled"),
+            Symbol::new(&env, "nft_hook_config_updated"),
+        );
+        env.events().publish(
+            (Symbol::new(&env, "nft_hook_config_updated"),),
+            (admin, enabled, env.ledger().sequence()),
+        );
+    }
+
+    /// Returns true if the NFT mint hook event is currently enabled.
+    pub fn get_nft_hook_enabled(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::NftHookEnabled)
+            .unwrap_or(false)
+    }
+
     pub fn blacklist_address(env: Env, admin: Address, address: Address, reason_hash: BytesN<32>) {
         admin.require_auth();
         Self::assert_admin(&env, &admin);
@@ -918,6 +960,7 @@ impl ChainSettleContract {
         let logistics_fee_bps = options.logistics_fee_bps;
         let supplier_collateral = options.supplier_collateral;
         let expires_at_ledger = options.expires_at_ledger;
+        let metadata_hash = options.metadata_hash.clone();
 
         if buyers.is_empty() {
             panic!("at least one buyer is required");
@@ -1080,6 +1123,7 @@ impl ChainSettleContract {
             arbiter_fee_bps: options.arbiter_fee_bps,
             logistics_fee_bps,
             expires_at_ledger,
+            metadata_hash,
         };
 
         Self::append_audit_entry(
@@ -1776,6 +1820,26 @@ impl ChainSettleContract {
                     .unwrap_or(0);
                 if collateral > 0 {
                     token_client.transfer(&env.current_contract_address(), &shipment.supplier, &collateral);
+                }
+
+                // Issue #104 — Emit NFT mint hook event if enabled.
+                // Purely informational: no state change or external contract call.
+                let nft_hook_enabled: bool = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::NftHookEnabled)
+                    .unwrap_or(false);
+                if nft_hook_enabled {
+                    env.events().publish(
+                        (Symbol::new(&env, "nft_mint_hook"), shipment_id.clone()),
+                        (
+                            shipment.buyers.get(0).unwrap(),
+                            shipment.supplier.clone(),
+                            shipment.total_amount,
+                            env.ledger().sequence(),
+                            shipment.metadata_hash.clone(),
+                        ),
+                    );
                 }
             }
 
@@ -4189,6 +4253,7 @@ mod test_permissions;
 // mod test_chaos;
 mod property_tests;
 mod test;
+mod test_issues;
 mod test_oracle;
 mod test_upgrade;
 mod test_concurrent_disputes;

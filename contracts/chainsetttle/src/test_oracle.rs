@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use soroban_sdk::{token, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{token, Address, BytesN, Env, String, Symbol, Vec};
 
 use crate::{
     ChainSettleContract, Milestone, MilestoneMode, MilestoneStatus, ShipmentOptions, ShipmentStatus,
@@ -117,6 +117,10 @@ fn default_options(env: &Env) -> ShipmentOptions {
         auto_confirm_ledgers: 0,
         dispute_bond_amount: 0,
         arbiter_fee_bps: 0,
+        logistics_fee_bps: 0,
+        supplier_collateral: 0,
+        expires_at_ledger: None,
+        metadata_hash: BytesN::from_array(env, &[0u8; 32]),
     }
 }
 
@@ -429,6 +433,10 @@ fn test_oracle_pattern_dispute_after_rejection() {
         auto_confirm_ledgers: 0,
         dispute_bond_amount: 0,
         arbiter_fee_bps: 0,
+        logistics_fee_bps: 0,
+        supplier_collateral: 0,
+        expires_at_ledger: None,
+        metadata_hash: BytesN::from_array(&setup.env, &[0u8; 32]),
     };
 
     // Create shipment

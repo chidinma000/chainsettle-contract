@@ -148,6 +148,10 @@ fn opts(env: &Env) -> ShipmentOptions {
         auto_confirm_ledgers: 0,
         dispute_bond_amount: 0,
         arbiter_fee_bps: 0,
+        logistics_fee_bps: 0,
+        supplier_collateral: 0,
+        expires_at_ledger: None,
+        metadata_hash: BytesN::from_array(env, &[0u8; 32]),
     }
 }
 
