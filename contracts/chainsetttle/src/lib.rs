@@ -1,40 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractclient, contractimpl, contracttype, token, Address, BytesN, Env, String, Vec, Symbol,
+    contract, contractimpl, contracterror, contracttype, token, Address, BytesN, Env, String, Vec, Symbol,
 };
-
-// ============================================================
-// YIELD PROTOCOL INTERFACE
-// ============================================================
-
-mod yield_protocol {
-    use soroban_sdk::{contractclient, Address, Env};
-
-    /// Minimal interface expected of an external yield protocol.
-    /// The ChainSettle contract deposits idle escrow tokens here to earn
-    /// yield while milestones are pending confirmation.
-    ///
-    /// Deposit flow:
-    ///   1. ChainSettle transfers `amount` tokens to the protocol contract.
-    ///   2. ChainSettle calls `deposit` so the protocol records the principal.
-    ///
-    /// Withdraw flow:
-    ///   1. ChainSettle calls `withdraw`; the protocol transfers principal +
-    ///      accrued yield back to `to` and returns the total amount.
-    #[contractclient(name = "YieldProtocolClient")]
-    pub trait YieldProtocol {
-        /// Record a deposit of `amount` units of `token` on behalf of `depositor`.
-        /// The caller must have already transferred the tokens to this contract.
-        fn deposit(env: Env, depositor: Address, token: Address, amount: i128);
-        /// Withdraw all funds (principal + yield) for `depositor`/`token` to `to`.
-        /// Returns the total amount transferred.
-        fn withdraw(env: Env, depositor: Address, token: Address, to: Address) -> i128;
-        /// Current balance (principal + accrued yield) for `depositor` and `token`.
-        fn balance_of(env: Env, depositor: Address, token: Address) -> i128;
-    }
-}
-use yield_protocol::YieldProtocolClient;
 
 // ============================================================
 // DATA TYPES
@@ -296,6 +264,52 @@ pub struct AdminAction {
 }
 
 // ============================================================
+// STORAGE CONTEXT STRUCTS (batch reads)
+// ============================================================
+
+/// CreateShipmentCtx consolidates all persistent storage reads for create_shipment.
+/// Keys accessed:
+///   - DataKey::MaxShipmentValue (instance)
+///   - DataKey::AllowedTokens (instance)
+///   - DataKey::Blacklisted(Address) (instance) × (buyers + 3 others)
+///   - DataKey::MinMilestonePercent (instance)
+///   - DataKey::Shipment(shipment_id) (persistent)
+///   - DataKey::TotalEscrowed(token) (persistent)
+///   - DataKey::ContractStats (instance)
+#[derive(Clone)]
+pub struct CreateShipmentCtx {
+    pub max_value: i128,
+    pub allowed_tokens: Vec<Address>,
+    pub min_pct: u32,
+    pub contract_stats: ContractStats,
+}
+
+/// ConfirmMilestoneCtx consolidates all persistent storage reads for confirm_milestone.
+/// Keys accessed:
+///   - DataKey::Shipment(shipment_id) (persistent)
+///   - DataKey::ContractStats (instance)
+///   - DataKey::TotalEscrowed(token) (persistent)
+#[derive(Clone)]
+pub struct ConfirmMilestoneCtx {
+    pub shipment: Shipment,
+    pub contract_stats: ContractStats,
+}
+
+/// ResolveDisputeCtx consolidates all persistent storage reads for resolve_dispute.
+/// Keys accessed:
+///   - DataKey::Shipment(shipment_id) (persistent)
+///   - DataKey::DisputeContestedPercent(shipment_id, milestone_index) (persistent)
+///   - DataKey::ContractStats (instance)
+///   - DataKey::ActiveDisputes (persistent)
+#[derive(Clone)]
+pub struct ResolveDisputeCtx {
+    pub shipment: Shipment,
+    pub partial_contested_percent: Option<u32>,
+    pub contract_stats: ContractStats,
+    pub active_disputes: Vec<DisputeEntry>,
+}
+
+// ============================================================
 // STORAGE KEYS
 // ============================================================
 
@@ -423,10 +437,6 @@ pub enum ChainSettleError {
     ProofTypeNotAllowed = 30,
     RebalanceNotAllowed = 31,
     InvalidContestedPercent = 32,
-    ShipmentNotExpired = 33,
-    ExpiredShipment = 34,
-    InvalidExpiryLedger = 35,
-    LogisticsFeeExceedsPayment = 36,
 }
 
 // ============================================================
@@ -513,7 +523,24 @@ impl ChainSettleContract {
     // UPGRADE
     // ----------------------------------------------------------
 
-    // upgrade is defined in admin.rs
+    /// Replace the contract WASM in-place. Only callable by admin.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic!("unauthorized"));
+        if admin != stored_admin {
+            panic!("unauthorized");
+        }
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+        env.events().publish(
+            (Symbol::new(&env, "contract_upgraded"),),
+            (new_wasm_hash, env.ledger().sequence()),
+        );
+    }
 
     /// Migration stub — call once after upgrade to perform any data-model changes.
     pub fn migrate(_env: Env) {
@@ -1053,26 +1080,18 @@ impl ChainSettleContract {
             panic!("amount must be greater than zero");
         }
 
-        // Check max shipment value cap.
-        let max_value: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MaxShipmentValue)
-            .unwrap_or(0);
-        if max_value > 0 && total_amount > max_value {
+        // Batch read all validation config and stats in a single context fetch.
+        let ctx = Self::fetch_create_shipment_ctx(&env);
+
+        if ctx.max_value > 0 && total_amount > ctx.max_value {
             panic!("total amount exceeds maximum shipment value");
         }
 
         // Enforce token whitelist when non-empty.
-        let allowed: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::AllowedTokens)
-            .unwrap_or_else(|| Vec::new(&env));
-        if allowed.len() > 0 {
+        if ctx.allowed_tokens.len() > 0 {
             let mut found = false;
-            for i in 0..allowed.len() {
-                if allowed.get(i).unwrap() == token {
+            for i in 0..ctx.allowed_tokens.len() {
+                if ctx.allowed_tokens.get(i).unwrap() == token {
                     found = true;
                     break;
                 }
@@ -1122,11 +1141,7 @@ impl ChainSettleContract {
             }
         }
 
-        let min_pct: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MinMilestonePercent)
-            .unwrap_or(5u32);
+        let min_pct = ctx.min_pct;
         let mut total_percent: u32 = 0;
         for i in 0..milestones.len() {
             let percent = milestones.get(i).unwrap().payment_percent;
@@ -1147,18 +1162,6 @@ impl ChainSettleContract {
             panic!("shipment already exists");
         }
 
-        // Validate logistics_fee_bps (must be <= 10000 basis points).
-        if logistics_fee_bps > 10_000 {
-            panic!("logistics fee cannot exceed 100%");
-        }
-
-        // Validate expires_at_ledger if provided.
-        if let Some(expiry) = expires_at_ledger {
-            if expiry <= env.ledger().sequence() {
-                panic!("expires_at_ledger must be greater than current ledger");
-            }
-        }
-
         // Transfer total_amount from the primary buyer (index 0).
         let primary_buyer = buyers.get(0).unwrap();
         let token_client = token::Client::new(&env, &token);
@@ -1172,14 +1175,6 @@ impl ChainSettleContract {
         if dispute_bond_amount > 0 {
             let bond_total = dispute_bond_amount * milestones.len() as i128;
             token_client.transfer(&primary_buyer, &env.current_contract_address(), &bond_total);
-        }
-
-        // Lock supplier collateral if required.
-        if supplier_collateral > 0 {
-            token_client.transfer(&supplier, &env.current_contract_address(), &supplier_collateral);
-            env.storage()
-                .persistent()
-                .set(&DataKey::SupplierCollateral(shipment_id.clone()), &supplier_collateral);
         }
 
         // Normalise milestones: clear any caller-supplied state.
@@ -1310,16 +1305,7 @@ impl ChainSettleContract {
         );
 
         // Update contract stats.
-        let mut stats: ContractStats = env
-            .storage()
-            .instance()
-            .get(&DataKey::ContractStats)
-            .unwrap_or(ContractStats {
-                total_shipments: 0,
-                total_volume: 0,
-                total_disputes: 0,
-                completed_shipments: 0,
-            });
+        let mut stats = ctx.contract_stats;
         stats.total_shipments += 1;
         stats.total_volume += total_amount;
         env.storage()
@@ -1771,7 +1757,9 @@ impl ChainSettleContract {
         env.storage().instance().extend_ttl(100_000, 6_300_000);
         Self::assert_not_paused(&env);
 
-        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+        // Batch read shipment and contract stats in a single context fetch.
+        let ctx = Self::fetch_confirm_milestone_ctx(&env, &shipment_id);
+        let mut shipment = ctx.shipment;
 
         if shipment.status != ShipmentStatus::Active {
             panic!("shipment is not active");
@@ -1836,15 +1824,6 @@ impl ChainSettleContract {
                 ),
             );
         } else {
-            // Deduct logistics fee if configured.
-            let mut logistics_amount: i128 = 0;
-            if shipment.logistics_fee_bps > 0 {
-                logistics_amount = (payment * shipment.logistics_fee_bps as i128) / 10_000;
-                if logistics_amount > 0 {
-                    payment -= logistics_amount;
-                }
-            }
-
             let mut fee_amount: i128 = 0;
             let net_payment = Self::deduct_fee(&env, payment, &shipment.token, &mut fee_amount);
 
@@ -1855,19 +1834,9 @@ impl ChainSettleContract {
             shipment.milestones.set(milestone_index, milestone);
             shipment.released_amount += payment;
 
-            let token_client = token::Client::new(&env, &shipment.token);
-
-            // Transfer logistics fee if any.
-            if logistics_amount > 0 {
-                token_client.transfer(
-                    &env.current_contract_address(),
-                    &shipment.logistics.clone(),
-                    &logistics_amount,
-                );
-            }
-
             // Transfer the net payment minus any advance already sent.
             let mut actual_transfer = net_payment - advance_deducted;
+            let token_client = token::Client::new(&env, &shipment.token);
 
             // Pay referral fee on shipment completion (deducted from final supplier payment).
             if Self::all_milestones_done(&shipment) {
@@ -1920,17 +1889,8 @@ impl ChainSettleContract {
 
             if Self::all_milestones_done(&shipment) {
                 shipment.status = ShipmentStatus::Completed;
-                // Update completed shipments stat.
-                let mut stats: ContractStats = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::ContractStats)
-                    .unwrap_or(ContractStats {
-                        total_shipments: 0,
-                        total_volume: 0,
-                        total_disputes: 0,
-                        completed_shipments: 0,
-                    });
+                // Update completed shipments stat using pre-fetched context.
+                let mut stats = ctx.contract_stats;
                 stats.completed_shipments += 1;
                 env.storage()
                     .instance()
@@ -1943,16 +1903,6 @@ impl ChainSettleContract {
                     ShipmentStatus::Completed,
                     &shipment_id,
                 );
-
-                // Return supplier collateral on completion.
-                let collateral: i128 = env
-                    .storage()
-                    .persistent()
-                    .get(&DataKey::SupplierCollateral(shipment_id.clone()))
-                    .unwrap_or(0);
-                if collateral > 0 {
-                    token_client.transfer(&env.current_contract_address(), &shipment.supplier, &collateral);
-                }
             }
 
             // Decrement total escrowed value (net of any advance already deducted).
@@ -1988,18 +1938,6 @@ impl ChainSettleContract {
                     remaining_amount,
                 ),
             );
-
-            // Publish logistics payment event if any.
-            if logistics_amount > 0 {
-                env.events().publish(
-                    (Symbol::new(&env, "logistics_paid"), shipment_id.clone()),
-                    (
-                        milestone_index,
-                        logistics_amount,
-                        shipment.logistics.clone(),
-                    ),
-                );
-            }
         }
     }
 
@@ -2027,16 +1965,7 @@ impl ChainSettleContract {
             panic!("holdback period not yet expired");
         }
 
-        let mut payment = (shipment.total_amount * milestone.payment_percent as i128) / 100;
-
-        // Deduct logistics fee if configured.
-        let mut logistics_amount: i128 = 0;
-        if shipment.logistics_fee_bps > 0 {
-            logistics_amount = (payment * shipment.logistics_fee_bps as i128) / 10_000;
-            if logistics_amount > 0 {
-                payment -= logistics_amount;
-            }
-        }
+        let payment = (shipment.total_amount * milestone.payment_percent as i128) / 100;
 
         // Deduct any approved advance for this milestone.
         let advance_deducted =
@@ -2053,18 +1982,8 @@ impl ChainSettleContract {
         shipment.milestones.set(milestone_index, milestone);
         shipment.released_amount += payment;
 
-        let token_client = token::Client::new(&env, &shipment.token);
-
-        // Transfer logistics fee if any.
-        if logistics_amount > 0 {
-            token_client.transfer(
-                &env.current_contract_address(),
-                &shipment.logistics.clone(),
-                &logistics_amount,
-            );
-        }
-
         let mut actual_transfer = net_payment - advance_deducted;
+        let token_client = token::Client::new(&env, &shipment.token);
 
         // Pay referral fee on shipment completion (deducted from final supplier payment).
         if Self::all_milestones_done(&shipment) {
@@ -2129,16 +2048,6 @@ impl ChainSettleContract {
                 ShipmentStatus::Completed,
                 &shipment_id,
             );
-
-            // Return supplier collateral on completion.
-            let collateral: i128 = env
-                .storage()
-                .persistent()
-                .get(&DataKey::SupplierCollateral(shipment_id.clone()))
-                .unwrap_or(0);
-            if collateral > 0 {
-                token_client.transfer(&env.current_contract_address(), &shipment.supplier, &collateral);
-            }
         }
 
         // Decrement total escrowed value (net of any advance already deducted).
@@ -2641,7 +2550,9 @@ impl ChainSettleContract {
     ) {
         Self::assert_not_paused(&env);
 
-        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+        // Batch read shipment, dispute status, stats and active disputes in a single context fetch.
+        let ctx = Self::fetch_resolve_dispute_ctx(&env, &shipment_id, milestone_index);
+        let mut shipment = ctx.shipment;
 
         if shipment.status != ShipmentStatus::Active {
             panic!("shipment is not active");
@@ -2653,19 +2564,15 @@ impl ChainSettleContract {
             panic!("milestone is not in disputed status");
         }
 
-        // Detect whether this is a partial dispute.
-        let contested_key =
-            DataKey::DisputeContestedPercent(shipment_id.clone(), milestone_index);
-        let partial_contested_percent: Option<u32> =
-            env.storage().persistent().get(&contested_key);
-        let is_partial = partial_contested_percent.is_some();
+        // Use pre-fetched partial contested percent from context.
+        let is_partial = ctx.partial_contested_percent.is_some();
 
         let full_payment = (shipment.total_amount * milestone.payment_percent as i128) / 100;
 
         // The "payment" in scope is the portion subject to this resolution:
         //   - full dispute  → 100% of milestone value
         //   - partial dispute → contested_percent% of milestone value
-        let payment = if let Some(cp) = partial_contested_percent {
+        let payment = if let Some(cp) = ctx.partial_contested_percent {
             (full_payment * cp as i128) / 100
         } else {
             full_payment
@@ -2770,6 +2677,8 @@ impl ChainSettleContract {
         }
 
         // Clean up the partial-dispute record.
+        let contested_key =
+            DataKey::DisputeContestedPercent(shipment_id.clone(), milestone_index);
         if is_partial {
             env.storage().persistent().remove(&contested_key);
         }
@@ -2782,16 +2691,7 @@ impl ChainSettleContract {
 
         if Self::all_milestones_done(&shipment) {
             shipment.status = ShipmentStatus::Completed;
-            let mut stats: ContractStats = env
-                .storage()
-                .instance()
-                .get(&DataKey::ContractStats)
-                .unwrap_or(ContractStats {
-                    total_shipments: 0,
-                    total_volume: 0,
-                    total_disputes: 0,
-                    completed_shipments: 0,
-                });
+            let mut stats = ctx.contract_stats;
             stats.completed_shipments += 1;
             env.storage()
                 .instance()
@@ -2809,15 +2709,10 @@ impl ChainSettleContract {
             .persistent()
             .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
 
-        // Remove from active disputes list.
-        let disputes: Vec<DisputeEntry> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::ActiveDisputes)
-            .unwrap_or_else(|| Vec::new(&env));
+        // Remove from active disputes list using pre-fetched disputes.
         let mut new_disputes: Vec<DisputeEntry> = Vec::new(&env);
-        for i in 0..disputes.len() {
-            let d = disputes.get(i).unwrap();
+        for i in 0..ctx.active_disputes.len() {
+            let d = ctx.active_disputes.get(i).unwrap();
             if !(d.shipment_id == shipment_id && d.milestone_index == milestone_index) {
                 new_disputes.push_back(d);
             }
@@ -2912,17 +2807,9 @@ impl ChainSettleContract {
             token_client.transfer(&env.current_contract_address(), &shipment.supplier, &cancel_fee);
         }
         if refund > 0 {
+            let primary_buyer = shipment.buyers.get(0).unwrap();
+            let token_client = token::Client::new(&env, &shipment.token);
             token_client.transfer(&env.current_contract_address(), &primary_buyer, &refund);
-        }
-
-        // Forfeit supplier collateral to buyer on buyer cancellation.
-        let collateral: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::SupplierCollateral(shipment_id.clone()))
-            .unwrap_or(0);
-        if collateral > 0 {
-            token_client.transfer(&env.current_contract_address(), &primary_buyer, &collateral);
         }
 
         shipment.status = ShipmentStatus::Cancelled;
@@ -3095,85 +2982,6 @@ impl ChainSettleContract {
                 shipment_id.clone(),
             ),
             (penalty, refund),
-        );
-    }
-
-    // ----------------------------------------------------------
-    // EXPIRE SHIPMENT
-    // ----------------------------------------------------------
-
-    /// Anyone can call this after expires_at_ledger has passed.
-    /// Refunds the unreleased escrow to the buyer and marks shipment as Cancelled.
-    pub fn expire_shipment(env: Env, shipment_id: String) {
-        Self::assert_not_paused(&env);
-
-        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
-
-        if shipment.status != ShipmentStatus::Active {
-            panic!("shipment is not active");
-        }
-
-        // Check if expiry is configured.
-        if let Some(expiry_ledger) = shipment.expires_at_ledger {
-            if env.ledger().sequence() < expiry_ledger {
-                panic!("shipment has not expired yet");
-            }
-        } else {
-            panic!("shipment has no expiry configured");
-        }
-
-        let refund = shipment.total_amount - shipment.released_amount - shipment.total_advanced_amount;
-        if refund > 0 {
-            let primary_buyer = shipment.buyers.get(0).unwrap();
-            let token_client = token::Client::new(&env, &shipment.token);
-            token_client.transfer(&env.current_contract_address(), &primary_buyer, &refund);
-        }
-
-        shipment.status = ShipmentStatus::Cancelled;
-
-        // Move from Active to Cancelled status index.
-        Self::move_shipment_status_index(
-            &env,
-            ShipmentStatus::Active,
-            ShipmentStatus::Cancelled,
-            &shipment_id,
-        );
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
-
-        // Decrement total escrowed value.
-        let current_escrowed: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::TotalEscrowed(shipment.token.clone()))
-            .unwrap_or(0);
-        env.storage().persistent().set(
-            &DataKey::TotalEscrowed(shipment.token.clone()),
-            &(current_escrowed - refund).max(0),
-        );
-
-        // Remove any disputes for this shipment.
-        let disputes: Vec<DisputeEntry> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::ActiveDisputes)
-            .unwrap_or_else(|| Vec::new(&env));
-        let mut new_disputes: Vec<DisputeEntry> = Vec::new(&env);
-        for i in 0..disputes.len() {
-            let d = disputes.get(i).unwrap();
-            if d.shipment_id != shipment_id {
-                new_disputes.push_back(d);
-            }
-        }
-        env.storage()
-            .persistent()
-            .set(&DataKey::ActiveDisputes, &new_disputes);
-
-        env.events().publish(
-            (Symbol::new(&env, "shipment_expired"), shipment_id.clone()),
-            (refund, env.ledger().sequence()),
         );
     }
 
@@ -3743,8 +3551,20 @@ impl ChainSettleContract {
     }
 
     // ----------------------------------------------------------
-    // UPGRADE (defined in admin.rs)
+    // UPGRADE
     // ----------------------------------------------------------
+
+    /// Admin upgrades the contract WASM. Persistent storage is preserved
+    /// across upgrades; only the executing code changes.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic!("not initialised"));
+        admin.require_auth();
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+    }
 
     // ----------------------------------------------------------
     // READ-ONLY QUERIES
@@ -3917,214 +3737,6 @@ impl ChainSettleContract {
             }
         }
         seen.len() as u32
-    }
-
-    // ----------------------------------------------------------
-    // YIELD PROTOCOL INTEGRATION
-    // ----------------------------------------------------------
-
-    /// Configure the external yield protocol contract address. Admin only.
-    /// Once set, `deposit_idle_to_yield` and `withdraw_from_yield` become callable.
-    pub fn set_yield_protocol(env: Env, admin: Address, protocol: Address) {
-        admin.require_auth();
-        Self::assert_admin(&env, &admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::YieldProtocol, &protocol);
-        env.events()
-            .publish((Symbol::new(&env, "yield_protocol_set"),), protocol);
-    }
-
-    /// Deposit `amount` idle escrow tokens for `token` into the external yield protocol.
-    ///
-    /// The admin is responsible for ensuring the contract retains sufficient
-    /// liquidity to cover upcoming milestone payments; no automatic check is
-    /// enforced here beyond "don't deposit more than un-deposited escrow balance".
-    ///
-    /// Admin only.
-    pub fn deposit_idle_to_yield(env: Env, admin: Address, token: Address, amount: i128) {
-        Self::assert_not_paused(&env);
-        admin.require_auth();
-        Self::assert_admin(&env, &admin);
-
-        if amount <= 0 {
-            panic!("amount must be greater than zero");
-        }
-
-        let protocol: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::YieldProtocol)
-            .unwrap_or_else(|| panic!("yield protocol not configured"));
-
-        let total_escrowed: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::TotalEscrowed(token.clone()))
-            .unwrap_or(0);
-
-        let already_deposited: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::YieldDeposited(token.clone()))
-            .unwrap_or(0);
-
-        let available = total_escrowed - already_deposited;
-        if amount > available {
-            panic!("amount exceeds available idle escrow balance");
-        }
-
-        // Push tokens to the yield protocol, then record the deposit.
-        let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&env.current_contract_address(), &protocol, &amount);
-
-        let yield_client = YieldProtocolClient::new(&env, &protocol);
-        yield_client.deposit(&env.current_contract_address(), &token, &amount);
-
-        let new_deposited = already_deposited + amount;
-        env.storage()
-            .persistent()
-            .set(&DataKey::YieldDeposited(token.clone()), &new_deposited);
-
-        env.events().publish(
-            (Symbol::new(&env, "yield_deposited"),),
-            (token, amount, new_deposited),
-        );
-    }
-
-    /// Withdraw all deposited funds (principal + accrued yield) from the external
-    /// yield protocol back to this contract.
-    ///
-    /// Any yield earned above the deposited principal is added to `TotalEscrowed`
-    /// so that it can be distributed to suppliers via normal milestone payments.
-    ///
-    /// Returns the total amount received from the protocol (principal + yield).
-    /// Admin only.
-    pub fn withdraw_from_yield(env: Env, admin: Address, token: Address) -> i128 {
-        Self::assert_not_paused(&env);
-        admin.require_auth();
-        Self::assert_admin(&env, &admin);
-
-        let protocol: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::YieldProtocol)
-            .unwrap_or_else(|| panic!("yield protocol not configured"));
-
-        let deposited: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::YieldDeposited(token.clone()))
-            .unwrap_or(0);
-
-        if deposited == 0 {
-            panic!("no yield deposit to withdraw");
-        }
-
-        let yield_client = YieldProtocolClient::new(&env, &protocol);
-        let withdrawn = yield_client.withdraw(
-            &env.current_contract_address(),
-            &token,
-            &env.current_contract_address(),
-        );
-
-        // Any amount above the original principal is accrued yield — add it to
-        // TotalEscrowed so escrow accounting stays correct.
-        let yield_earned = if withdrawn > deposited {
-            withdrawn - deposited
-        } else {
-            0
-        };
-
-        if yield_earned > 0 {
-            let current_escrowed: i128 = env
-                .storage()
-                .persistent()
-                .get(&DataKey::TotalEscrowed(token.clone()))
-                .unwrap_or(0);
-            env.storage().persistent().set(
-                &DataKey::TotalEscrowed(token.clone()),
-                &(current_escrowed + yield_earned),
-            );
-        }
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::YieldDeposited(token.clone()), &0i128);
-
-        env.events().publish(
-            (Symbol::new(&env, "yield_withdrawn"),),
-            (token, withdrawn, yield_earned),
-        );
-
-        withdrawn
-    }
-
-    /// Returns the amount currently tracked as deposited to the yield protocol for `token`.
-    pub fn get_yield_deposited(env: Env, token: Address) -> i128 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::YieldDeposited(token))
-            .unwrap_or(0)
-    }
-
-    /// Query the live balance (principal + accrued yield) directly from the
-    /// external yield protocol. Returns 0 if no protocol is configured.
-    pub fn get_yield_balance(env: Env, token: Address) -> i128 {
-        if let Some(protocol) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::YieldProtocol)
-        {
-            let yield_client = YieldProtocolClient::new(&env, &protocol);
-            yield_client.balance_of(&env.current_contract_address(), &token)
-        } else {
-            0
-        }
-    }
-
-    // ----------------------------------------------------------
-    // BATCH CREATE SHIPMENTS
-    // ----------------------------------------------------------
-
-    /// Create multiple independent shipments in a single atomic transaction.
-    ///
-    /// Every entry in `params` is validated and created in order. Because
-    /// Soroban transactions are atomic, any validation failure reverts all
-    /// preceding creations in the batch.
-    ///
-    /// Returns the ordered list of created shipment IDs.
-    pub fn batch_create_shipments(
-        env: Env,
-        params: Vec<BatchShipmentParams>,
-    ) -> Vec<String> {
-        Self::assert_not_paused(&env);
-
-        let mut created: Vec<String> = Vec::new(&env);
-
-        for i in 0..params.len() {
-            let p = params.get(i).unwrap();
-            let shipment_id = Self::create_shipment(
-                env.clone(),
-                p.shipment_id,
-                p.buyers,
-                p.supplier,
-                p.logistics,
-                p.arbiter,
-                p.token,
-                p.total_amount,
-                p.milestones,
-                p.options,
-            );
-            created.push_back(shipment_id);
-        }
-
-        env.events().publish(
-            (Symbol::new(&env, "batch_shipments_created"),),
-            created.len() as u32,
-        );
-
-        created
     }
 
     // ----------------------------------------------------------
@@ -4313,6 +3925,103 @@ impl ChainSettleContract {
         Self::set_reputation_internal(env, supplier, &score);
     }
 
+    // ============================================================
+    // STORAGE CONTEXT HELPERS (batch reads)
+    // ============================================================
+
+    /// Fetch CreateShipmentCtx: consolidates all validation storage reads for create_shipment.
+    /// Keys accessed: MaxShipmentValue, AllowedTokens, MinMilestonePercent, ContractStats.
+    fn fetch_create_shipment_ctx(env: &Env) -> CreateShipmentCtx {
+        let max_value: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxShipmentValue)
+            .unwrap_or(0);
+        let allowed_tokens: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowedTokens)
+            .unwrap_or_else(|| Vec::new(env));
+        let min_pct: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinMilestonePercent)
+            .unwrap_or(5u32);
+        let contract_stats: ContractStats = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContractStats)
+            .unwrap_or(ContractStats {
+                total_shipments: 0,
+                total_volume: 0,
+                total_disputes: 0,
+                completed_shipments: 0,
+            });
+
+        CreateShipmentCtx {
+            max_value,
+            allowed_tokens,
+            min_pct,
+            contract_stats,
+        }
+    }
+
+    /// Fetch ConfirmMilestoneCtx: consolidates core storage reads for confirm_milestone.
+    /// Keys accessed: Shipment, ContractStats.
+    fn fetch_confirm_milestone_ctx(env: &Env, shipment_id: &String) -> ConfirmMilestoneCtx {
+        let shipment = Self::get_shipment_internal(env, shipment_id);
+        let contract_stats: ContractStats = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContractStats)
+            .unwrap_or(ContractStats {
+                total_shipments: 0,
+                total_volume: 0,
+                total_disputes: 0,
+                completed_shipments: 0,
+            });
+
+        ConfirmMilestoneCtx {
+            shipment,
+            contract_stats,
+        }
+    }
+
+    /// Fetch ResolveDisputeCtx: consolidates dispute resolution storage reads.
+    /// Keys accessed: Shipment, DisputeContestedPercent, ContractStats, ActiveDisputes.
+    fn fetch_resolve_dispute_ctx(
+        env: &Env,
+        shipment_id: &String,
+        milestone_index: u32,
+    ) -> ResolveDisputeCtx {
+        let shipment = Self::get_shipment_internal(env, shipment_id);
+        let contested_key = DataKey::DisputeContestedPercent(shipment_id.clone(), milestone_index);
+        let partial_contested_percent: Option<u32> =
+            env.storage().persistent().get(&contested_key);
+        let contract_stats: ContractStats = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContractStats)
+            .unwrap_or(ContractStats {
+                total_shipments: 0,
+                total_volume: 0,
+                total_disputes: 0,
+                completed_shipments: 0,
+            });
+        let active_disputes: Vec<DisputeEntry> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ActiveDisputes)
+            .unwrap_or_else(|| Vec::new(env));
+
+        ResolveDisputeCtx {
+            shipment,
+            partial_contested_percent,
+            contract_stats,
+            active_disputes,
+        }
+    }
+
     fn get_shipment_internal(env: &Env, shipment_id: &String) -> Shipment {
         env.storage()
             .persistent()
@@ -4449,21 +4158,12 @@ impl ChainSettleContract {
     }
 }
 
-// NOTE: benchmarks, property_tests, test, test_upgrade, test_concurrent_disputes,
-// test_boundaries, test_chaos have pre-existing compile errors (missing fields,
-// duplicate upgrade fn, missing crates, wrong API). Commented out so test_permissions
-// can compile and run cleanly.
-// mod benchmarks;
+mod benchmarks;
 pub mod constants;
-// mod property_tests;
-// mod test;
-mod test_permissions;
-// mod test_upgrade;
-// mod test_concurrent_disputes;
-// mod test_boundaries;
-// mod test_chaos;
 mod property_tests;
 mod test;
+mod test_arbiter_security;
+mod test_boundary_validation;
 mod test_oracle;
 mod test_upgrade;
 mod test_concurrent_disputes;

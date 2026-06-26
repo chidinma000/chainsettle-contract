@@ -4,8 +4,8 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
-    token, vec, Address, BytesN, Env, String, Symbol,
+    testutils::{Address as _, Ledger as _, Symbol},
+    token, vec, Address, BytesN, Env, String,
 };
 use std::format;
 
@@ -25,26 +25,17 @@ struct TestSetup {
     treasury: Address,
 }
 
-/// Create a mock SAC (Stellar Asset Contract) for testing.
-/// Returns the token address and mints initial funds to addresses.
-fn mock_token(env: &Env, admin: &Address, addresses: &Vec<Address>, initial_balance: i128) -> Address {
-    let token_id = env
-        .register_stellar_asset_contract_v2(admin.clone())
-        .address();
-    let token_client = token::StellarAssetClient::new(env, &token_id);
-
-    for i in 0..addresses.len() {
-        token_client.mint(addresses.get(i).unwrap(), &initial_balance);
-    }
-
-    token_id
-}
-
 fn setup() -> TestSetup {
     let env = Env::default();
     env.mock_all_auths();
 
     let contract_id = env.register(ChainSettleContract, ());
+
+    let token_admin = Address::generate(&env);
+    let token_id = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_client = token::StellarAssetClient::new(&env, &token_id);
 
     let buyer = Address::generate(&env);
     let buyer2 = Address::generate(&env);
@@ -52,10 +43,9 @@ fn setup() -> TestSetup {
     let logistics = Address::generate(&env);
     let arbiter = Address::generate(&env);
     let treasury = Address::generate(&env);
-    let token_admin = Address::generate(&env);
 
-    let addresses = vec![&env, buyer.clone(), buyer2.clone()];
-    let token_id = mock_token(&env, &token_admin, &addresses, 10_000_000_000);
+    token_client.mint(&buyer, &10_000_000_000);
+    token_client.mint(&buyer2, &10_000_000_000);
 
     let client = ChainSettleContractClient::new(&env, &contract_id);
     client.init(&buyer);
