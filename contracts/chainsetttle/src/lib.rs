@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractclient, contractimpl, contracttype, token, Address, BytesN, Env, String, Vec, Symbol,
+    contract, contractimpl, contracterror, contracttype, token, Address, BytesN, Env, String, Vec, Symbol,
 };
 
 // ============================================================
@@ -281,6 +281,52 @@ pub struct AdminAction {
     pub action_id: String,
     pub operation: Symbol,
     pub params: String,
+}
+
+// ============================================================
+// STORAGE CONTEXT STRUCTS (batch reads)
+// ============================================================
+
+/// CreateShipmentCtx consolidates all persistent storage reads for create_shipment.
+/// Keys accessed:
+///   - DataKey::MaxShipmentValue (instance)
+///   - DataKey::AllowedTokens (instance)
+///   - DataKey::Blacklisted(Address) (instance) × (buyers + 3 others)
+///   - DataKey::MinMilestonePercent (instance)
+///   - DataKey::Shipment(shipment_id) (persistent)
+///   - DataKey::TotalEscrowed(token) (persistent)
+///   - DataKey::ContractStats (instance)
+#[derive(Clone)]
+pub struct CreateShipmentCtx {
+    pub max_value: i128,
+    pub allowed_tokens: Vec<Address>,
+    pub min_pct: u32,
+    pub contract_stats: ContractStats,
+}
+
+/// ConfirmMilestoneCtx consolidates all persistent storage reads for confirm_milestone.
+/// Keys accessed:
+///   - DataKey::Shipment(shipment_id) (persistent)
+///   - DataKey::ContractStats (instance)
+///   - DataKey::TotalEscrowed(token) (persistent)
+#[derive(Clone)]
+pub struct ConfirmMilestoneCtx {
+    pub shipment: Shipment,
+    pub contract_stats: ContractStats,
+}
+
+/// ResolveDisputeCtx consolidates all persistent storage reads for resolve_dispute.
+/// Keys accessed:
+///   - DataKey::Shipment(shipment_id) (persistent)
+///   - DataKey::DisputeContestedPercent(shipment_id, milestone_index) (persistent)
+///   - DataKey::ContractStats (instance)
+///   - DataKey::ActiveDisputes (persistent)
+#[derive(Clone)]
+pub struct ResolveDisputeCtx {
+    pub shipment: Shipment,
+    pub partial_contested_percent: Option<u32>,
+    pub contract_stats: ContractStats,
+    pub active_disputes: Vec<DisputeEntry>,
 }
 
 // ============================================================
@@ -932,26 +978,18 @@ impl ChainSettleContract {
             panic!("amount must be greater than zero");
         }
 
-        // Check max shipment value cap.
-        let max_value: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MaxShipmentValue)
-            .unwrap_or(0);
-        if max_value > 0 && total_amount > max_value {
+        // Batch read all validation config and stats in a single context fetch.
+        let ctx = Self::fetch_create_shipment_ctx(&env);
+
+        if ctx.max_value > 0 && total_amount > ctx.max_value {
             panic!("total amount exceeds maximum shipment value");
         }
 
         // Enforce token whitelist when non-empty.
-        let allowed: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::AllowedTokens)
-            .unwrap_or_else(|| Vec::new(&env));
-        if allowed.len() > 0 {
+        if ctx.allowed_tokens.len() > 0 {
             let mut found = false;
-            for i in 0..allowed.len() {
-                if allowed.get(i).unwrap() == token {
+            for i in 0..ctx.allowed_tokens.len() {
+                if ctx.allowed_tokens.get(i).unwrap() == token {
                     found = true;
                     break;
                 }
@@ -982,11 +1020,7 @@ impl ChainSettleContract {
             }
         }
 
-        let min_pct: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MinMilestonePercent)
-            .unwrap_or(5u32);
+        let min_pct = ctx.min_pct;
         let mut total_percent: u32 = 0;
         for i in 0..milestones.len() {
             let percent = milestones.get(i).unwrap().payment_percent;
@@ -1167,16 +1201,7 @@ impl ChainSettleContract {
         );
 
         // Update contract stats.
-        let mut stats: ContractStats = env
-            .storage()
-            .instance()
-            .get(&DataKey::ContractStats)
-            .unwrap_or(ContractStats {
-                total_shipments: 0,
-                total_volume: 0,
-                total_disputes: 0,
-                completed_shipments: 0,
-            });
+        let mut stats = ctx.contract_stats;
         stats.total_shipments += 1;
         stats.total_volume += total_amount;
         env.storage()
@@ -1627,7 +1652,9 @@ impl ChainSettleContract {
         env.storage().instance().extend_ttl(100_000, 6_300_000);
         Self::assert_not_paused(&env);
 
-        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+        // Batch read shipment and contract stats in a single context fetch.
+        let ctx = Self::fetch_confirm_milestone_ctx(&env, &shipment_id);
+        let mut shipment = ctx.shipment;
 
         if shipment.status != ShipmentStatus::Active {
             panic!("shipment is not active");
@@ -1744,17 +1771,8 @@ impl ChainSettleContract {
 
             if Self::all_milestones_done(&shipment) {
                 shipment.status = ShipmentStatus::Completed;
-                // Update completed shipments stat.
-                let mut stats: ContractStats = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::ContractStats)
-                    .unwrap_or(ContractStats {
-                        total_shipments: 0,
-                        total_volume: 0,
-                        total_disputes: 0,
-                        completed_shipments: 0,
-                    });
+                // Update completed shipments stat using pre-fetched context.
+                let mut stats = ctx.contract_stats;
                 stats.completed_shipments += 1;
                 env.storage()
                     .instance()
@@ -2402,7 +2420,9 @@ impl ChainSettleContract {
     ) {
         Self::assert_not_paused(&env);
 
-        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+        // Batch read shipment, dispute status, stats and active disputes in a single context fetch.
+        let ctx = Self::fetch_resolve_dispute_ctx(&env, &shipment_id, milestone_index);
+        let mut shipment = ctx.shipment;
 
         if shipment.status != ShipmentStatus::Active {
             panic!("shipment is not active");
@@ -2414,19 +2434,15 @@ impl ChainSettleContract {
             panic!("milestone is not in disputed status");
         }
 
-        // Detect whether this is a partial dispute.
-        let contested_key =
-            DataKey::DisputeContestedPercent(shipment_id.clone(), milestone_index);
-        let partial_contested_percent: Option<u32> =
-            env.storage().persistent().get(&contested_key);
-        let is_partial = partial_contested_percent.is_some();
+        // Use pre-fetched partial contested percent from context.
+        let is_partial = ctx.partial_contested_percent.is_some();
 
         let full_payment = (shipment.total_amount * milestone.payment_percent as i128) / 100;
 
         // The "payment" in scope is the portion subject to this resolution:
         //   - full dispute  → 100% of milestone value
         //   - partial dispute → contested_percent% of milestone value
-        let payment = if let Some(cp) = partial_contested_percent {
+        let payment = if let Some(cp) = ctx.partial_contested_percent {
             (full_payment * cp as i128) / 100
         } else {
             full_payment
@@ -2531,6 +2547,8 @@ impl ChainSettleContract {
         }
 
         // Clean up the partial-dispute record.
+        let contested_key =
+            DataKey::DisputeContestedPercent(shipment_id.clone(), milestone_index);
         if is_partial {
             env.storage().persistent().remove(&contested_key);
         }
@@ -2543,16 +2561,7 @@ impl ChainSettleContract {
 
         if Self::all_milestones_done(&shipment) {
             shipment.status = ShipmentStatus::Completed;
-            let mut stats: ContractStats = env
-                .storage()
-                .instance()
-                .get(&DataKey::ContractStats)
-                .unwrap_or(ContractStats {
-                    total_shipments: 0,
-                    total_volume: 0,
-                    total_disputes: 0,
-                    completed_shipments: 0,
-                });
+            let mut stats = ctx.contract_stats;
             stats.completed_shipments += 1;
             env.storage()
                 .instance()
@@ -2570,15 +2579,10 @@ impl ChainSettleContract {
             .persistent()
             .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
 
-        // Remove from active disputes list.
-        let disputes: Vec<DisputeEntry> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::ActiveDisputes)
-            .unwrap_or_else(|| Vec::new(&env));
+        // Remove from active disputes list using pre-fetched disputes.
         let mut new_disputes: Vec<DisputeEntry> = Vec::new(&env);
-        for i in 0..disputes.len() {
-            let d = disputes.get(i).unwrap();
+        for i in 0..ctx.active_disputes.len() {
+            let d = ctx.active_disputes.get(i).unwrap();
             if !(d.shipment_id == shipment_id && d.milestone_index == milestone_index) {
                 new_disputes.push_back(d);
             }
@@ -4038,6 +4042,103 @@ impl ChainSettleContract {
         Self::set_reputation_internal(env, supplier, &score);
     }
 
+    // ============================================================
+    // STORAGE CONTEXT HELPERS (batch reads)
+    // ============================================================
+
+    /// Fetch CreateShipmentCtx: consolidates all validation storage reads for create_shipment.
+    /// Keys accessed: MaxShipmentValue, AllowedTokens, MinMilestonePercent, ContractStats.
+    fn fetch_create_shipment_ctx(env: &Env) -> CreateShipmentCtx {
+        let max_value: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxShipmentValue)
+            .unwrap_or(0);
+        let allowed_tokens: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowedTokens)
+            .unwrap_or_else(|| Vec::new(env));
+        let min_pct: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinMilestonePercent)
+            .unwrap_or(5u32);
+        let contract_stats: ContractStats = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContractStats)
+            .unwrap_or(ContractStats {
+                total_shipments: 0,
+                total_volume: 0,
+                total_disputes: 0,
+                completed_shipments: 0,
+            });
+
+        CreateShipmentCtx {
+            max_value,
+            allowed_tokens,
+            min_pct,
+            contract_stats,
+        }
+    }
+
+    /// Fetch ConfirmMilestoneCtx: consolidates core storage reads for confirm_milestone.
+    /// Keys accessed: Shipment, ContractStats.
+    fn fetch_confirm_milestone_ctx(env: &Env, shipment_id: &String) -> ConfirmMilestoneCtx {
+        let shipment = Self::get_shipment_internal(env, shipment_id);
+        let contract_stats: ContractStats = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContractStats)
+            .unwrap_or(ContractStats {
+                total_shipments: 0,
+                total_volume: 0,
+                total_disputes: 0,
+                completed_shipments: 0,
+            });
+
+        ConfirmMilestoneCtx {
+            shipment,
+            contract_stats,
+        }
+    }
+
+    /// Fetch ResolveDisputeCtx: consolidates dispute resolution storage reads.
+    /// Keys accessed: Shipment, DisputeContestedPercent, ContractStats, ActiveDisputes.
+    fn fetch_resolve_dispute_ctx(
+        env: &Env,
+        shipment_id: &String,
+        milestone_index: u32,
+    ) -> ResolveDisputeCtx {
+        let shipment = Self::get_shipment_internal(env, shipment_id);
+        let contested_key = DataKey::DisputeContestedPercent(shipment_id.clone(), milestone_index);
+        let partial_contested_percent: Option<u32> =
+            env.storage().persistent().get(&contested_key);
+        let contract_stats: ContractStats = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContractStats)
+            .unwrap_or(ContractStats {
+                total_shipments: 0,
+                total_volume: 0,
+                total_disputes: 0,
+                completed_shipments: 0,
+            });
+        let active_disputes: Vec<DisputeEntry> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ActiveDisputes)
+            .unwrap_or_else(|| Vec::new(env));
+
+        ResolveDisputeCtx {
+            shipment,
+            partial_contested_percent,
+            contract_stats,
+            active_disputes,
+        }
+    }
+
     fn get_shipment_internal(env: &Env, shipment_id: &String) -> Shipment {
         env.storage()
             .persistent()
@@ -4194,3 +4295,4 @@ mod test_upgrade;
 mod test_concurrent_disputes;
 mod test_boundaries;
 mod test_chaos;
+mod test_regression;
