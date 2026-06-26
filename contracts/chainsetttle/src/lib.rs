@@ -3847,6 +3847,7 @@ pub mod constants;
 mod property_tests;
 mod test;
 mod test_arbiter_security;
+mod test_boundary_validation;
 mod test_oracle;
 mod test_upgrade;
 mod test_concurrent_disputes;
