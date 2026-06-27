@@ -114,9 +114,13 @@ fn default_options(_env: &Env) -> ShipmentOptions {
         logistics_fee_bps: 0,
         supplier_collateral: 0,
         expires_at_ledger: None,
+
+        metadata_hash: BytesN::from_array(_env, &[0u8; 32]),
+
         metadata_hash: None,
         referrer: None,
         buyer_cancel_fee_bps: 0,
+
     }
 }
 
@@ -1259,9 +1263,13 @@ fn test_dispute_cooldown_enforced() {
                 logistics_fee_bps: 0,
                 supplier_collateral: 0,
                 expires_at_ledger: None,
+
+                metadata_hash: BytesN::from_array(&t.env, &[0u8; 32]),
+
                 metadata_hash: None,
                 referrer: None,
                 buyer_cancel_fee_bps: 0,
+
             },
     );
 
@@ -1331,9 +1339,13 @@ fn test_dispute_cooldown_blocks_early_redispute() {
                 logistics_fee_bps: 0,
                 supplier_collateral: 0,
                 expires_at_ledger: None,
+
+                metadata_hash: BytesN::from_array(&t.env, &[0u8; 32]),
+
                 metadata_hash: None,
                 referrer: None,
                 buyer_cancel_fee_bps: 0,
+
             },
     );
 
@@ -1433,9 +1445,13 @@ fn test_cooldown_updated_on_resolve() {
                 logistics_fee_bps: 0,
                 supplier_collateral: 0,
                 expires_at_ledger: None,
+
+                metadata_hash: BytesN::from_array(&t.env, &[0u8; 32]),
+
                 metadata_hash: None,
                 referrer: None,
                 buyer_cancel_fee_bps: 0,
+
             },
     );
 
@@ -1827,9 +1843,13 @@ fn test_non_whitelisted_token_rejected() {
                 logistics_fee_bps: 0,
                 supplier_collateral: 0,
                 expires_at_ledger: None,
+
+                metadata_hash: BytesN::from_array(&t.env, &[0u8; 32]),
+
                 metadata_hash: None,
                 referrer: None,
                 buyer_cancel_fee_bps: 0,
+
             },
     );
 }
@@ -1956,9 +1976,13 @@ fn test_holdback_happy_path() {
                 logistics_fee_bps: 0,
                 supplier_collateral: 0,
                 expires_at_ledger: None,
+
+                metadata_hash: BytesN::from_array(&t.env, &[0u8; 32]),
+
                 metadata_hash: None,
                 referrer: None,
                 buyer_cancel_fee_bps: 0,
+
             },
     );
 
@@ -2050,9 +2074,13 @@ fn test_holdback_early_dispute_cancels_hold() {
                 logistics_fee_bps: 0,
                 supplier_collateral: 0,
                 expires_at_ledger: None,
+
+                metadata_hash: BytesN::from_array(&t.env, &[0u8; 32]),
+
                 metadata_hash: None,
                 referrer: None,
                 buyer_cancel_fee_bps: 0,
+
             },
     );
 
@@ -2321,9 +2349,13 @@ fn test_multisig_both_buyers_must_confirm() {
                 logistics_fee_bps: 0,
                 supplier_collateral: 0,
                 expires_at_ledger: None,
+
+                metadata_hash: BytesN::from_array(&t.env, &[0u8; 32]),
+
                 metadata_hash: None,
                 referrer: None,
                 buyer_cancel_fee_bps: 0,
+
             },
     );
 
@@ -2404,9 +2436,13 @@ fn test_multisig_minority_veto_dispute() {
                 logistics_fee_bps: 0,
                 supplier_collateral: 0,
                 expires_at_ledger: None,
+
+                metadata_hash: BytesN::from_array(&t.env, &[0u8; 32]),
+
                 metadata_hash: None,
                 referrer: None,
                 buyer_cancel_fee_bps: 0,
+
             },
     );
 
@@ -2786,9 +2822,13 @@ fn test_deadline_cancellation_success() {
                 logistics_fee_bps: 0,
                 supplier_collateral: 0,
                 expires_at_ledger: None,
+
+                metadata_hash: BytesN::from_array(&t.env, &[0u8; 32]),
+
                 metadata_hash: None,
                 referrer: None,
                 buyer_cancel_fee_bps: 0,
+
             },
     );
 
@@ -2848,9 +2888,13 @@ fn test_deadline_cancellation_too_early() {
                 logistics_fee_bps: 0,
                 supplier_collateral: 0,
                 expires_at_ledger: None,
+
+                metadata_hash: BytesN::from_array(&t.env, &[0u8; 32]),
+
                 metadata_hash: None,
                 referrer: None,
                 buyer_cancel_fee_bps: 0,
+
             },
     );
 
