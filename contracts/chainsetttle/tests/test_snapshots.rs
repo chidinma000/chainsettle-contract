@@ -295,6 +295,11 @@ fn default_options(_env: &Env) -> ShipmentOptions {
         arbiter_panel: vec![_env],
         grace_period_ledgers: 0,
         jurisdiction: None,
+        quality_grades: vec![_env],
+        milestone_quantities: vec![_env],
+        retainage_bps: 0,
+        warranty_bps: 0,
+        warranty_ledgers: 0,
     }
 }
 

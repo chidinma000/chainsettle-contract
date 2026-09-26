@@ -48,3 +48,17 @@ pub const DEFAULT_DISPUTE_LOSS_THRESHOLD: u32 = 3;
 
 /// Percentage of stake slashed per dispute loss (default 33.33% = 3333 bps).
 pub const DEFAULT_SLASH_PERCENTAGE_BPS: u32 = 3_333;
+
+/// Maximum number of quality grades a shipment may configure (#519).
+pub const MAX_QUALITY_GRADES: u32 = 10;
+
+/// Grade review window (in ledgers) used by `confirm_milestone_graded` when the
+/// shipment has neither a holdback nor a review/auto-confirm window configured
+/// (#519). ~1 day at 5 s/ledger.
+pub const DEFAULT_GRADE_REVIEW_WINDOW_LEDGERS: u32 = 17_280;
+
+/// Maximum retainage a shipment may withhold from each milestone payment (#520).
+pub const MAX_RETAINAGE_BPS: u32 = 2_000;
+
+/// Maximum warranty holdback a shipment may withhold from each milestone payment (#521).
+pub const MAX_WARRANTY_BPS: u32 = 2_000;

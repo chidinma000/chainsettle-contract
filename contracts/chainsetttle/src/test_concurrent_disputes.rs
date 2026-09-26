@@ -108,6 +108,11 @@ fn create_and_dispute(
             arbiter_panel: vec![env],
             jurisdiction: None,
             grace_period_ledgers: 0,
+            quality_grades: vec![env],
+            milestone_quantities: vec![env],
+            retainage_bps: 0,
+            warranty_bps: 0,
+            warranty_ledgers: 0,
         },
     );
     let proof = String::from_str(env, "ipfs://concurrent-proof");
