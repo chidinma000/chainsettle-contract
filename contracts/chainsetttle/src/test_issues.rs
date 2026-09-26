@@ -86,6 +86,11 @@ fn default_options(_env: &Env) -> ShipmentOptions {
         arbiter_panel: soroban_sdk::Vec::new(_env),
         jurisdiction: None,
         grace_period_ledgers: 0,
+        quality_grades: soroban_sdk::Vec::new(_env),
+        milestone_quantities: soroban_sdk::Vec::new(_env),
+        retainage_bps: 0,
+        warranty_bps: 0,
+        warranty_ledgers: 0,
     }
 }
 

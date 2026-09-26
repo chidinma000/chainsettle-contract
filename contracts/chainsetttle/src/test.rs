@@ -135,6 +135,11 @@ fn default_options(_env: &Env) -> ShipmentOptions {
         arbiter_panel: vec![_env],
         jurisdiction: None,
         grace_period_ledgers: 0,
+        quality_grades: vec![_env],
+        milestone_quantities: vec![_env],
+        retainage_bps: 0,
+        warranty_bps: 0,
+        warranty_ledgers: 0,
     }
 }
 
@@ -1318,6 +1323,11 @@ fn test_dispute_cooldown_enforced() {
             arbiter_panel: vec![&t.env],
             jurisdiction: None,
             grace_period_ledgers: 0,
+            quality_grades: vec![&t.env],
+            milestone_quantities: vec![&t.env],
+            retainage_bps: 0,
+            warranty_bps: 0,
+            warranty_ledgers: 0,
         },
     );
 
@@ -1403,6 +1413,11 @@ fn test_dispute_cooldown_blocks_early_redispute() {
             arbiter_panel: vec![&t.env],
             jurisdiction: None,
             grace_period_ledgers: 0,
+            quality_grades: vec![&t.env],
+            milestone_quantities: vec![&t.env],
+            retainage_bps: 0,
+            warranty_bps: 0,
+            warranty_ledgers: 0,
         },
     );
 
@@ -1518,6 +1533,11 @@ fn test_cooldown_updated_on_resolve() {
             arbiter_panel: vec![&t.env],
             jurisdiction: None,
             grace_period_ledgers: 0,
+            quality_grades: vec![&t.env],
+            milestone_quantities: vec![&t.env],
+            retainage_bps: 0,
+            warranty_bps: 0,
+            warranty_ledgers: 0,
         },
     );
 
@@ -1925,6 +1945,11 @@ fn test_non_whitelisted_token_rejected() {
             arbiter_panel: vec![&t.env],
             jurisdiction: None,
             grace_period_ledgers: 0,
+            quality_grades: vec![&t.env],
+            milestone_quantities: vec![&t.env],
+            retainage_bps: 0,
+            warranty_bps: 0,
+            warranty_ledgers: 0,
         },
     );
 }
@@ -2067,6 +2092,11 @@ fn test_holdback_happy_path() {
             arbiter_panel: vec![&t.env],
             jurisdiction: None,
             grace_period_ledgers: 0,
+            quality_grades: vec![&t.env],
+            milestone_quantities: vec![&t.env],
+            retainage_bps: 0,
+            warranty_bps: 0,
+            warranty_ledgers: 0,
         },
     );
 
@@ -2174,6 +2204,11 @@ fn test_holdback_early_dispute_cancels_hold() {
             arbiter_panel: vec![&t.env],
             jurisdiction: None,
             grace_period_ledgers: 0,
+            quality_grades: vec![&t.env],
+            milestone_quantities: vec![&t.env],
+            retainage_bps: 0,
+            warranty_bps: 0,
+            warranty_ledgers: 0,
         },
     );
 
@@ -2251,6 +2286,11 @@ fn test_holdback_early_release_rejected() {
             arbiter_panel: vec![&t.env],
             jurisdiction: None,
             grace_period_ledgers: 0,
+            quality_grades: vec![&t.env],
+            milestone_quantities: vec![&t.env],
+            retainage_bps: 0,
+            warranty_bps: 0,
+            warranty_ledgers: 0,
         },
     );
 
@@ -2473,6 +2513,11 @@ fn test_multisig_both_buyers_must_confirm() {
             arbiter_panel: vec![&t.env],
             jurisdiction: None,
             grace_period_ledgers: 0,
+            quality_grades: vec![&t.env],
+            milestone_quantities: vec![&t.env],
+            retainage_bps: 0,
+            warranty_bps: 0,
+            warranty_ledgers: 0,
         },
     );
 
@@ -2569,6 +2614,11 @@ fn test_multisig_minority_veto_dispute() {
             arbiter_panel: vec![&t.env],
             jurisdiction: None,
             grace_period_ledgers: 0,
+            quality_grades: vec![&t.env],
+            milestone_quantities: vec![&t.env],
+            retainage_bps: 0,
+            warranty_bps: 0,
+            warranty_ledgers: 0,
         },
     );
 
@@ -2974,6 +3024,11 @@ fn test_deadline_cancellation_success() {
             arbiter_panel: vec![&t.env],
             jurisdiction: None,
             grace_period_ledgers: 0,
+            quality_grades: vec![&t.env],
+            milestone_quantities: vec![&t.env],
+            retainage_bps: 0,
+            warranty_bps: 0,
+            warranty_ledgers: 0,
         },
     );
 
@@ -3049,6 +3104,11 @@ fn test_deadline_cancellation_too_early() {
             arbiter_panel: vec![&t.env],
             jurisdiction: None,
             grace_period_ledgers: 0,
+            quality_grades: vec![&t.env],
+            milestone_quantities: vec![&t.env],
+            retainage_bps: 0,
+            warranty_bps: 0,
+            warranty_ledgers: 0,
         },
     );
 

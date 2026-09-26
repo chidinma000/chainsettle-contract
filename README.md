@@ -2067,3 +2067,58 @@ The contract allows updating the active buyer or supplier on a shipment using `t
 - **Events Emitted**:
   - `BuyerTransferred(shipment_id, old_buyer, new_buyer)`
   - `SupplierTransferred(shipment_id, old_supplier, new_supplier)`
+
+### Settlement Options: Quality Grades, Partial Quantities, Retainage & Warranty
+
+Four optional `ShipmentOptions` fields change how milestone money is settled. Each defaults to off (empty `Vec` or `0`), so existing shipments behave exactly as before. The values are validated in `create_shipment` and stored under their own storage keys.
+
+| Option | Type | Validation |
+| --- | --- | --- |
+| `quality_grades` | `Vec<u32>` | At most 10 entries. Grade 0 must be `10000` and the values must be non-increasing (e.g. `[10000, 9000, 7500]`) |
+| `milestone_quantities` | `Vec<u32>` | Empty, or exactly one entry per milestone (`0` = not quantity-based) |
+| `retainage_bps` | `u32` | `≤ 2000` |
+| `warranty_bps`, `warranty_ledgers` | `u32`, `u32` | `warranty_bps ≤ 2000`. Set both or neither |
+
+#### Quality-graded confirmation (#519)
+
+Function | Who | Behaviour
+--- | --- | ---
+`confirm_milestone_graded(buyer, shipment_id, milestone_index, grade)` | Registered buyer (not a delegate or co-buyer) | `grade` is an index into `quality_grades`. A `10000` bps grade (grade 0) works exactly like `confirm_milestone`. A lower grade moves the milestone to `ConfirmedHeld` for the **grade review window** (the longer of `holdback_ledgers` and the review/auto-confirm window, or 17,280 ledgers if neither is set). When the window ends, `release_held_payment` pays `gross * grade_bps / 10000` to the supplier (after fees) and refunds the rest to the buyer. The two amounts always add up to the milestone's gross amount.
+`raise_dispute(supplier, shipment_id, milestone_index)` | Supplier, during the grade review window | Challenges the grade. The arbiter then calls `resolve_dispute`. `approve = true` pays the supplier the full milestone. `approve = false` keeps the grade: the supplier gets the graded share, and the buyer gets the difference minus any arbiter fee. The buyer cannot dispute or withdraw a graded milestone.
+`get_quality_grades(shipment_id)` / `get_milestone_grade(shipment_id, milestone_index)` | Anyone (read-only) | Return the configured grades and the grade recorded for a milestone.
+
+Events: `milestone_graded` `(milestone_index, grade, grade_bps, payout, refund, release_after_ledger)`, `grade_disputed`, `grade_settled`. Each grade is also written to the shipment audit log (`milestone_graded`, `grade_disputed`, `grade_settled`).
+
+Graded confirmation is not available when joint confirmation is required or when the milestone has an approved advance. Use `resolve_dispute` for grade disputes. Timeout, panel and mediation resolutions treat a grade dispute as an ordinary full dispute.
+
+#### Quantity-based pro-rata milestones (#518)
+
+Function | Who | Behaviour
+--- | --- | ---
+`confirm_partial_quantity(buyer, shipment_id, milestone_index, delivered_qty)` | Registered buyer | Needs a submitted proof and `delivered_qty > 0`, and `delivered_qty` cannot be more than the quantity still outstanding. Each call releases `gross * cumulative / expected` minus the amount already released. Platform and logistics fees are taken from every release. The milestone stays `ProofSubmitted` until the running total reaches `expected_quantity`. The call that delivers the last unit pays the remainder, including any rounding dust, through the normal `confirm_milestone` path and marks the milestone `Confirmed`.
+`get_delivered_quantity(shipment_id, milestone_index) → (delivered, expected)` | Anyone (read-only) | Returns the running total delivered and the expected quantity.
+
+Event: `partial_quantity_confirmed` `(milestone_index, delivered_qty, cumulative_qty, expected_qty, released_gross, fee)`, plus a `partial_qty_confirmed` audit entry. After a partial delivery, every other settlement path (`confirm_milestone`, auto-confirmation, disputes) pays only the unreleased remainder, so a milestone can never pay out more than its gross amount. This function cannot be used on shipments with `holdback_ledgers > 0`, with joint confirmation, or on milestones with an approved advance.
+
+#### Retainage (#520)
+
+When `retainage_bps > 0`, that share of each net milestone payment (after platform and logistics fees) is withheld into a per-shipment retainage balance. The balance is released to the supplier in full when the shipment completes, and refunded to the buyer if the shipment is cancelled, expires or is emergency-recovered.
+
+Function | Who | Behaviour
+--- | --- | ---
+`get_retainage_balance(shipment_id) → i128` | Anyone (read-only) | Retainage withheld so far that has not yet been released or refunded.
+
+Events: `holdback_withheld` `(milestone_index, retained, warranty)`, `retainage_released` `(supplier, amount)`, `holdback_refunded` `(buyer, retainage, warranty)`. Withheld retainage counts as settled milestone weight, so `get_completion_percentage` and `get_escrow_balance` are unaffected. It is still included in `get_total_escrowed_value` until it is paid out.
+
+#### Warranty holdback (#521)
+
+When `warranty_bps > 0`, that share of each net milestone payment stays in escrow after the shipment completes. The warranty period ends at `completed_ledger + warranty_ledgers`.
+
+Function | Who | Behaviour
+--- | --- | ---
+`file_warranty_claim(buyer, shipment_id, evidence_hash: BytesN<32>)` | Registered buyer | Only on a `Completed` shipment during the warranty period, with a non-zero evidence hash and no other claim open. The claim goes to the shipment arbiter and blocks release until it is resolved.
+`resolve_warranty_claim(arbiter, shipment_id, refund_buyer)` | Shipment arbiter | `true` refunds the whole warranty holdback to the buyer. `false` dismisses the claim, and the holdback is released to the supplier once the period ends.
+`release_warranty(shipment_id)` | Anyone | After the period ends with no open claim, pays the exact warranty amount to the supplier.
+`get_warranty_balance` / `get_warranty_end_ledger` / `get_warranty_claim` | Anyone (read-only) | Holdback in escrow, the ledger the period ends (`0` = not started), and the open claim.
+
+Events: `warranty_started`, `warranty_claim_filed`, `warranty_claim_resolved`, `warranty_released`. Each has a matching audit-log entry. A shipment cannot be archived while a warranty holdback is still in escrow. Cancelling before completion refunds any withheld warranty to the buyer.

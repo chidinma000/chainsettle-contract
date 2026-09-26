@@ -421,6 +421,38 @@ pub struct ShipmentOptions {
     // ── New features ───────────────────────────────────────────
     /// Configurable grace period (in ledgers) before late-delivery penalty accrual starts.
     pub grace_period_ledgers: u32,
+
+    // ── #519 Quality-graded milestone confirmation ────────────────────────────
+    /// Payout basis points per quality grade index (e.g. `[10000, 9000, 7500]`).
+    /// Grade 0 must be 10_000 and grades must be non-increasing. Empty = disabled.
+    pub quality_grades: Vec<u32>,
+
+    // ── #518 Quantity-based pro-rata milestones ───────────────────────────────
+    /// Expected quantity per milestone (0 = not quantity-based for that milestone).
+    /// Empty Vec = no quantity-based milestones. Non-empty length must match milestones.
+    pub milestone_quantities: Vec<u32>,
+
+    // ── #520 Retainage ────────────────────────────────────────────────────────
+    /// Basis points of each net milestone payment withheld until the shipment
+    /// completes (0 = disabled, max `constants::MAX_RETAINAGE_BPS`).
+    pub retainage_bps: u32,
+
+    // ── #521 Warranty holdback ────────────────────────────────────────────────
+    /// Basis points of each net milestone payment kept in escrow as a warranty
+    /// holdback after completion (0 = disabled, max `constants::MAX_WARRANTY_BPS`).
+    pub warranty_bps: u32,
+    /// Ledgers after completion during which the buyer may file a warranty claim.
+    /// Must be > 0 when `warranty_bps > 0`.
+    pub warranty_ledgers: u32,
+}
+
+/// #521 – Open warranty claim filed by the buyer after shipment completion.
+#[contracttype]
+#[derive(Clone, PartialEq, Debug)]
+pub struct WarrantyClaim {
+    pub buyer: Address,
+    pub evidence_hash: BytesN<32>,
+    pub filed_ledger: u32,
 }
 
 /// Configuration for time-decayed dispute bonds.
@@ -1293,6 +1325,40 @@ pub enum DataKeyExt3 {
     /// Admin flag: when true, create_shipment requires every named buyer to
     /// appear in the named supplier's approved-buyer list. Default: false.
     RequireMutualPreapproval,
+
+    // ── #519 Quality-graded milestone confirmation ────────────────────────
+    /// Payout bps per grade index configured at creation.
+    QualityGrades(String),
+    /// Grade recorded for (shipment_id, milestone_index) by `confirm_milestone_graded`.
+    MilestoneGrade(String, u32),
+    /// (grade, bps) awaiting settlement once the grade review window elapses.
+    PendingGrade(String, u32),
+    /// (grade, bps) under supplier dispute; applied if the arbiter rejects the dispute.
+    GradeDispute(String, u32),
+
+    // ── #518 Quantity-based pro-rata milestones ───────────────────────────
+    /// Expected quantity per milestone (0 = not quantity-based).
+    MilestoneQuantities(String),
+    /// Cumulative quantity confirmed for (shipment_id, milestone_index).
+    DeliveredQuantity(String, u32),
+    /// Gross amount already released pro-rata for (shipment_id, milestone_index).
+    PartialQtyReleased(String, u32),
+
+    // ── #520 Retainage ────────────────────────────────────────────────────
+    /// Retainage basis points configured at creation.
+    RetainageBps(String),
+    /// Retainage withheld so far and not yet released or refunded.
+    RetainageBalance(String),
+
+    // ── #521 Warranty holdback ────────────────────────────────────────────
+    /// (warranty_bps, warranty_ledgers) configured at creation.
+    WarrantyConfig(String),
+    /// Warranty amount withheld and still in escrow.
+    WarrantyBalance(String),
+    /// Ledger at which the warranty period ends (set on completion).
+    WarrantyEndsAt(String),
+    /// Open warranty claim awaiting arbiter resolution.
+    WarrantyClaim(String),
 }
 
 /// Partial joint-confirmation progress for a high-value shipment's milestone (#367).
@@ -4036,6 +4102,12 @@ impl ChainSettleContract {
         let confirmation_cooldown_ledgers = options.confirmation_cooldown_ledgers;
         let arbiter_panel = options.arbiter_panel.clone();
         let jurisdiction = options.jurisdiction.clone();
+        // #518–#521 settlement options.
+        let quality_grades = options.quality_grades.clone();
+        let milestone_quantities = options.milestone_quantities.clone();
+        let retainage_bps = options.retainage_bps;
+        let warranty_bps = options.warranty_bps;
+        let warranty_ledgers = options.warranty_ledgers;
 
         if buyer_cancel_fee_bps > constants::MAX_FEE_BPS {
             panic!("buyer_cancel_fee_bps cannot exceed 1000 (10%)");
@@ -4270,6 +4342,16 @@ impl ChainSettleContract {
             }
         }
 
+        // #518–#521: Validate grading, quantity, retainage and warranty options.
+        Self::validate_settlement_options(
+            &quality_grades,
+            &milestone_quantities,
+            retainage_bps,
+            warranty_bps,
+            warranty_ledgers,
+            milestones.len(),
+        );
+
         // #164: Validate deadlines length when provided.
         if deadlines.len() > 0 && deadlines.len() != milestones.len() {
             panic!("deadline count must match milestone count");
@@ -4428,6 +4510,17 @@ impl ChainSettleContract {
                 constants::TTL_MAX_LEDGERS,
             );
         }
+
+        // #518–#521: Persist settlement options under their own keys.
+        Self::store_settlement_options(
+            &env,
+            &shipment_id,
+            &quality_grades,
+            &milestone_quantities,
+            retainage_bps,
+            warranty_bps,
+            warranty_ledgers,
+        );
 
         // #164: Store per-milestone Unix timestamp deadlines when provided.
         if deadlines.len() > 0 {
@@ -6265,7 +6358,7 @@ impl ChainSettleContract {
                     );
                 }
 
-                Self::emit_shipment_completed(&env, &shipment_id, shipment.released_amount);
+                Self::settle_on_completion(&env, &shipment_id, &mut shipment);
             }
 
             // Decrement total escrowed value (net of any advance already deducted).
@@ -6334,7 +6427,17 @@ impl ChainSettleContract {
             panic!("holdback period not yet expired");
         }
 
-        let payment = Self::milestone_gross_payment(&env, &shipment, milestone_index);
+        let gross = Self::milestone_gross_payment(&env, &shipment, milestone_index);
+
+        // #519: A graded confirmation releases only the graded share to the supplier;
+        // the remainder is refunded to the buyer.
+        let grade_key = DataKeyExt3::PendingGrade(shipment_id.clone(), milestone_index);
+        let pending_grade: Option<(u32, u32)> = env.storage().persistent().get(&grade_key);
+        let payment = match pending_grade {
+            Some((_, grade_bps)) => (gross * grade_bps as i128) / 10_000,
+            None => gross,
+        };
+        let grade_refund = gross - payment;
 
         // Deduct any approved advance for this milestone.
         let advance_deducted =
@@ -6350,7 +6453,8 @@ impl ChainSettleContract {
         milestone.status = MilestoneStatus::Confirmed;
         milestone.release_after_ledger = 0;
         shipment.milestones.set(milestone_index, milestone);
-        shipment.released_amount += payment;
+        // The graded refund also settles this milestone's weight.
+        shipment.released_amount += gross;
         // #162: Track last confirmed milestone.
         shipment.last_confirmed_milestone_index = Some(milestone_index);
 
@@ -6412,6 +6516,29 @@ impl ChainSettleContract {
             );
         }
 
+        if let Some((grade, grade_bps)) = pending_grade {
+            env.storage().persistent().remove(&grade_key);
+            let primary_buyer = shipment.buyers.get(0).unwrap();
+            if grade_refund > 0 {
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &primary_buyer,
+                    &grade_refund,
+                );
+            }
+            Self::append_audit_entry(
+                &env,
+                &mut shipment,
+                env.current_contract_address(),
+                Symbol::new(&env, "grade_settled"),
+                Symbol::new(&env, "release_held_payment"),
+            );
+            env.events().publish(
+                (Symbol::new(&env, "grade_settled"), shipment_id.clone()),
+                (milestone_index, grade, grade_bps, payment, grade_refund),
+            );
+        }
+
         if Self::all_milestones_done(&shipment) {
             // Return unused early bonus pool to buyer on completion.
             if shipment.early_bonus_remaining > 0 {
@@ -6447,11 +6574,11 @@ impl ChainSettleContract {
                 ShipmentStatus::Completed,
                 &shipment_id,
             );
-            Self::emit_shipment_completed(&env, &shipment_id, shipment.released_amount);
+            Self::settle_on_completion(&env, &shipment_id, &mut shipment);
         }
 
         // Decrement total escrowed value (net of any advance already deducted).
-        let net_outflow = payment - advance_deducted;
+        let net_outflow = gross - advance_deducted;
         let current_escrowed: i128 = env
             .storage()
             .persistent()
@@ -6649,7 +6776,7 @@ impl ChainSettleContract {
                 ShipmentStatus::Completed,
                 &shipment_id,
             );
-            Self::emit_shipment_completed(&env, &shipment_id, shipment.released_amount);
+            Self::settle_on_completion(&env, &shipment_id, &mut shipment);
         }
 
         env.storage()
@@ -6691,7 +6818,20 @@ impl ChainSettleContract {
         }
         Self::assert_shipment_not_paused(&env, &shipment_id);
         Self::assert_shipment_not_on_hold(&env, &shipment_id);
-        Self::require_buyer_auth(&shipment, &buyer);
+
+        // #519: While a graded confirmation is pending, only the supplier may dispute —
+        // contesting the grade. `buyer` is then the supplier's address.
+        let grade_key = DataKeyExt3::PendingGrade(shipment_id.clone(), milestone_index);
+        let pending_grade: Option<(u32, u32)> = env.storage().persistent().get(&grade_key);
+        let supplier_grade_dispute = pending_grade.is_some() && buyer == shipment.supplier;
+        if supplier_grade_dispute {
+            buyer.require_auth();
+        } else {
+            Self::require_buyer_auth(&shipment, &buyer);
+            if pending_grade.is_some() {
+                panic!("graded milestone can only be disputed by the supplier");
+            }
+        }
 
         // Dispute cooldown check.
         if shipment.dispute_cooldown_ledgers > 0 {
@@ -6710,18 +6850,25 @@ impl ChainSettleContract {
             panic!("can only dispute a submitted or held proof");
         }
 
-        // Check if auto-confirmation window has passed; if so, reject dispute.
-        let effective_window = Self::get_effective_auto_confirm_window(&env, &shipment);
-        if effective_window > 0 {
-            if let Some(proof_ledger) = milestone.proof_submitted_ledger {
-                let auto_confirm_ledger = proof_ledger + effective_window;
-                if env.ledger().sequence() >= auto_confirm_ledger {
-                    panic!("milestone has auto-confirmed; dispute window closed");
+        if supplier_grade_dispute {
+            // The grade review window replaces the proof-based dispute windows.
+            if env.ledger().sequence() >= milestone.release_after_ledger {
+                panic!("grade review window has elapsed");
+            }
+        } else {
+            // Check if auto-confirmation window has passed; if so, reject dispute.
+            let effective_window = Self::get_effective_auto_confirm_window(&env, &shipment);
+            if effective_window > 0 {
+                if let Some(proof_ledger) = milestone.proof_submitted_ledger {
+                    let auto_confirm_ledger = proof_ledger + effective_window;
+                    if env.ledger().sequence() >= auto_confirm_ledger {
+                        panic!("milestone has auto-confirmed; dispute window closed");
+                    }
                 }
             }
-        }
 
-        Self::assert_dispute_filing_window_ok(&env, &shipment, milestone_index);
+            Self::assert_dispute_filing_window_ok(&env, &shipment, milestone_index);
+        }
 
         let max_open: u32 = env
             .storage()
@@ -6783,11 +6930,29 @@ impl ChainSettleContract {
                 milestone_index,
             ));
 
+        // #519: Move the pending grade into the dispute; resolve_dispute applies it
+        // if the arbiter rejects the supplier's challenge.
+        let grade_dispute_key = DataKeyExt3::GradeDispute(shipment_id.clone(), milestone_index);
+        if let Some(grade) = pending_grade {
+            env.storage().persistent().remove(&grade_key);
+            env.storage().persistent().set(&grade_dispute_key, &grade);
+            env.events().publish(
+                (Symbol::new(&env, "grade_disputed"), shipment_id.clone()),
+                (milestone_index, grade.0, grade.1, buyer.clone()),
+            );
+        } else {
+            env.storage().persistent().remove(&grade_dispute_key);
+        }
+
         Self::append_audit_entry(
             &env,
             &mut shipment,
             buyer.clone(),
-            Symbol::new(&env, "dispute_raised"),
+            if supplier_grade_dispute {
+                Symbol::new(&env, "grade_disputed")
+            } else {
+                Symbol::new(&env, "dispute_raised")
+            },
             Symbol::new(&env, "raise_dispute"),
         );
 
@@ -6809,7 +6974,9 @@ impl ChainSettleContract {
             .persistent()
             .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
 
-        Self::increment_reputation_internal(&env, &shipment.supplier, 0, 1, 0);
+        if !supplier_grade_dispute {
+            Self::increment_reputation_internal(&env, &shipment.supplier, 0, 1, 0);
+        }
 
         // Add to active disputes list.
         let mut disputes: Vec<DisputeEntry> = env
@@ -6901,6 +7068,17 @@ impl ChainSettleContract {
         {
             panic!("can only dispute a submitted or held proof");
         }
+        // #519: A pending grade may only be contested by the supplier via raise_dispute.
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKeyExt3::PendingGrade(shipment_id.clone(), milestone_index))
+        {
+            panic!("graded milestone can only be disputed by the supplier");
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKeyExt3::GradeDispute(shipment_id.clone(), milestone_index));
 
         // Dispute cooldown check.
         if shipment.dispute_cooldown_ledgers > 0 {
@@ -7166,6 +7344,11 @@ impl ChainSettleContract {
 
         let token_client = token::Client::new(&env, &shipment.token);
 
+        // #519: Supplier-raised dispute contesting a quality grade.
+        let grade_dispute_key = DataKeyExt3::GradeDispute(shipment_id.clone(), milestone_index);
+        let grade_dispute: Option<(u32, u32)> = env.storage().persistent().get(&grade_dispute_key);
+        env.storage().persistent().remove(&grade_dispute_key);
+
         // #393: When an admin-configured finality delay is active, a supplier-favor
         // ruling does not move funds immediately. Instead the milestone is parked in
         // ResolvedPendingFinality for the delay window, giving the buyer a brief
@@ -7222,7 +7405,8 @@ impl ChainSettleContract {
             }
 
             // Return the dispute bond to the buyer (they raised a valid dispute).
-            if shipment.dispute_bond_amount > 0 {
+            // Not for a supplier grade dispute — the buyer did not raise it.
+            if shipment.dispute_bond_amount > 0 && grade_dispute.is_none() {
                 let primary_buyer = shipment.buyers.get(0).unwrap();
                 token_client.transfer(
                     &env.current_contract_address(),
@@ -7231,6 +7415,36 @@ impl ChainSettleContract {
                 );
             }
 
+            milestone.status = MilestoneStatus::Resolved;
+        } else if let Some((grade, grade_bps)) = grade_dispute {
+            // #519: The supplier's challenge failed, so the buyer's grade stands: the
+            // graded share goes to the supplier and the remainder, less the arbiter
+            // fee on the contested difference, is refunded to the buyer.
+            let contested = payment - (payment * grade_bps as i128) / 10_000;
+            let fee_bps = Self::applicable_arbiter_fee_bps(&env, contested, shipment.arbiter_fee_bps);
+            let arbiter_fee = (contested * fee_bps as i128) / 10_000;
+            if arbiter_fee > 0 {
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &shipment.arbiter,
+                    &arbiter_fee,
+                );
+            }
+            let (_, buyer_refund, _) = Self::pay_graded_split(
+                &env,
+                &shipment,
+                &shipment_id,
+                milestone_index,
+                payment,
+                grade_bps,
+                arbiter_fee,
+            );
+            shipment.released_amount += payment;
+            Self::decrease_total_escrowed(&env, &shipment.token, payment);
+            env.events().publish(
+                (Symbol::new(&env, "grade_settled"), shipment_id.clone()),
+                (milestone_index, grade, grade_bps, payment - contested, buyer_refund),
+            );
             milestone.status = MilestoneStatus::Resolved;
         } else if is_partial {
             // Partial dispute rejection: buyer contested but lost.
@@ -7409,7 +7623,7 @@ impl ChainSettleContract {
                 ShipmentStatus::Completed,
                 &shipment_id,
             );
-            Self::emit_shipment_completed(&env, &shipment_id, shipment.released_amount);
+            Self::settle_on_completion(&env, &shipment_id, &mut shipment);
         }
 
         // Remove from active disputes list using pre-fetched disputes.
@@ -7615,7 +7829,7 @@ impl ChainSettleContract {
                 ShipmentStatus::Completed,
                 &shipment_id,
             );
-            Self::emit_shipment_completed(&env, &shipment_id, shipment.released_amount);
+            Self::settle_on_completion(&env, &shipment_id, &mut shipment);
         }
 
         env.storage()
@@ -7901,6 +8115,7 @@ impl ChainSettleContract {
             token_client.transfer(&env.current_contract_address(), &primary_buyer, &collateral);
         }
 
+        Self::refund_holdbacks_on_cancel(&env, &shipment_id, &mut shipment, buyer.clone());
         shipment.status = ShipmentStatus::Cancelled;
         shipment.cancellation_reason = Vec::from_array(&env, [CancellationReason::BuyerCancelled]);
 
@@ -8033,6 +8248,7 @@ impl ChainSettleContract {
             token_client.transfer(&env.current_contract_address(), &primary_buyer, &refund);
         }
 
+        Self::refund_holdbacks_on_cancel(&env, &shipment_id, &mut shipment, supplier.clone());
         shipment.status = ShipmentStatus::Cancelled;
         shipment.cancellation_reason =
             Vec::from_array(&env, [CancellationReason::SupplierCancelled]);
@@ -8714,7 +8930,7 @@ impl ChainSettleContract {
                 ShipmentStatus::Completed,
                 &shipment_id,
             );
-            Self::emit_shipment_completed(&env, &shipment_id, shipment.released_amount);
+            Self::settle_on_completion(&env, &shipment_id, &mut shipment);
         }
 
         // Decrement total escrowed value.
@@ -8840,6 +9056,7 @@ impl ChainSettleContract {
             ShipmentStatus::Cancelled,
             shipment_id,
         );
+        Self::refund_holdbacks_on_cancel(env, shipment_id, &mut shipment, admin.clone());
         shipment.status = ShipmentStatus::Cancelled;
         shipment.cancellation_reason =
             Vec::from_array(env, [CancellationReason::AdminEmergencyRecovery]);
@@ -9079,7 +9296,7 @@ impl ChainSettleContract {
                 ShipmentStatus::Completed,
                 &shipment_id,
             );
-            Self::emit_shipment_completed(&env, &shipment_id, shipment.released_amount);
+            Self::settle_on_completion(&env, &shipment_id, &mut shipment);
         }
 
         shipment.milestones.set(milestone_index, milestone);
@@ -9461,7 +9678,7 @@ impl ChainSettleContract {
                 ShipmentStatus::Completed,
                 shipment_id,
             );
-            Self::emit_shipment_completed(env, shipment_id, shipment.released_amount);
+            Self::settle_on_completion(env, shipment_id, shipment);
         }
 
         shipment.open_dispute_count = shipment.open_dispute_count.saturating_sub(1);
@@ -9766,6 +9983,7 @@ impl ChainSettleContract {
             ShipmentStatus::Expired,
             &shipment_id,
         );
+        Self::refund_holdbacks_on_cancel(&env, &shipment_id, &mut shipment, buyer.clone());
         shipment.status = ShipmentStatus::Expired;
         shipment.cancellation_reason = Vec::from_array(&env, [CancellationReason::DeadlineRefund]);
         Self::increment_reputation_internal(&env, &shipment.supplier, 0, 0, 1);
@@ -9976,6 +10194,7 @@ impl ChainSettleContract {
             ShipmentStatus::Expired,
             &shipment_id,
         );
+        Self::refund_holdbacks_on_cancel(&env, &shipment_id, &mut shipment, admin.clone());
         shipment.status = ShipmentStatus::Expired;
         shipment.cancellation_reason = Vec::from_array(&env, [CancellationReason::DeadlineRefund]);
         Self::increment_reputation_internal(&env, &shipment.supplier, 0, 0, 1);
@@ -10666,7 +10885,7 @@ impl ChainSettleContract {
                 ShipmentStatus::Completed,
                 &shipment_id,
             );
-            Self::emit_shipment_completed(env, &shipment_id, shipment.released_amount);
+            Self::settle_on_completion(env, &shipment_id, &mut shipment);
         }
 
         env.storage()
@@ -11435,6 +11654,10 @@ impl ChainSettleContract {
         if age < threshold {
             panic!("shipment not old enough to archive");
         }
+        // #521: Keep the shipment live while a warranty holdback is still in escrow.
+        if Self::warranty_balance(&env, &shipment_id) > 0 {
+            panic!("warranty holdback still in escrow");
+        }
 
         let primary_buyer = shipment
             .buyers
@@ -11872,7 +12095,25 @@ impl ChainSettleContract {
     /// add up to `total_amount` (± integer truncation). Every accumulation into
     /// `Shipment.released_amount` is one of these values, which is what makes
     /// `get_completion_percentage` a faithful weight-progress reading.
+    ///
+    /// #518: For quantity-based milestones this is the *unreleased* remainder —
+    /// the full weight minus whatever `confirm_partial_quantity` already paid out —
+    /// so every other settlement path pays exactly what is left.
     fn milestone_gross_payment(env: &Env, shipment: &Shipment, milestone_index: u32) -> i128 {
+        let full = Self::milestone_full_gross_payment(env, shipment, milestone_index);
+        let partially_released: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKeyExt3::PartialQtyReleased(
+                shipment.id.clone(),
+                milestone_index,
+            ))
+            .unwrap_or(0);
+        full - partially_released
+    }
+
+    /// Full weight of a milestone, ignoring any pro-rata quantity releases (#518).
+    fn milestone_full_gross_payment(env: &Env, shipment: &Shipment, milestone_index: u32) -> i128 {
         let splits_key = DataKeyExt::MilestoneSplits(shipment.id.clone());
         if let Some(splits) = env
             .storage()
@@ -12279,6 +12520,17 @@ impl ChainSettleContract {
         supplier: &Address,
         token_client: &token::Client,
     ) {
+        if net_amount <= 0 {
+            return;
+        }
+        // #520/#521: Withhold retainage and warranty holdback before paying out.
+        let net_amount = Self::withhold_settlement_holdbacks(
+            env,
+            shipment_id,
+            milestone_index,
+            net_amount,
+            token_client,
+        );
         if net_amount <= 0 {
             return;
         }
@@ -12737,6 +12989,14 @@ impl ChainSettleContract {
         let mut milestone = shipment.milestones.get(milestone_index).unwrap();
         if milestone.status != MilestoneStatus::Disputed {
             panic!("milestone is not in disputed status");
+        }
+        // #519: A supplier's grade dispute is theirs to pursue; the buyer cannot withdraw it.
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKeyExt3::GradeDispute(shipment_id.clone(), milestone_index))
+        {
+            panic!("grade dispute can only be resolved by the arbiter");
         }
 
         // Revert to ProofSubmitted so the supplier's original proof stands.
@@ -13796,6 +14056,988 @@ impl ChainSettleContract {
     }
 }
 
+// ============================================================
+// #518–#521 SETTLEMENT EXTENSIONS
+// Quality-graded confirmation, pro-rata quantity milestones,
+// retainage and warranty holdback.
+// ============================================================
+
+#[contractimpl]
+impl ChainSettleContract {
+    // ----------------------------------------------------------
+    // #519: QUALITY-GRADED MILESTONE CONFIRMATION
+    // ----------------------------------------------------------
+
+    /// Buyer confirms a milestone with a pre-agreed quality grade. `grade` is an
+    /// index into the shipment's `quality_grades`; the grade's basis points decide
+    /// how much of the milestone's gross amount the supplier receives.
+    ///
+    /// * A 10_000 bps grade (grade 0) behaves exactly like `confirm_milestone`.
+    /// * Any lower grade parks the milestone in `ConfirmedHeld` for the grade review
+    ///   window. During that window the supplier may contest the grade with
+    ///   `raise_dispute`. Once the window elapses `release_held_payment` pays
+    ///   `gross * grade_bps / 10_000` to the supplier and refunds the rest to the buyer.
+    ///
+    /// Only a registered buyer may grade (delegates and co-buyers cannot).
+    pub fn confirm_milestone_graded(
+        env: Env,
+        buyer: Address,
+        shipment_id: String,
+        milestone_index: u32,
+        grade: u32,
+    ) {
+        env.storage()
+            .instance()
+            .extend_ttl(constants::TTL_INITIAL_LEDGERS, constants::TTL_MAX_LEDGERS);
+        Self::assert_not_paused(&env);
+
+        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+        if shipment.status != ShipmentStatus::Active {
+            panic!("shipment is not active");
+        }
+        Self::assert_shipment_not_on_hold(&env, &shipment_id);
+        if !Self::is_buyer(&shipment, &buyer) {
+            panic!("unauthorized");
+        }
+        if milestone_index >= shipment.milestones.len() {
+            panic!("invalid milestone index");
+        }
+
+        let grades: Vec<u32> = env
+            .storage()
+            .persistent()
+            .get(&DataKeyExt3::QualityGrades(shipment_id.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        if grades.is_empty() {
+            panic!("quality grades not configured");
+        }
+        if grade >= grades.len() {
+            panic!("invalid grade index");
+        }
+        let grade_bps = grades.get(grade).unwrap();
+        let gross = Self::milestone_gross_payment(&env, &shipment, milestone_index);
+
+        if grade_bps == 10_000 {
+            // Full-quality grade: identical to confirm_milestone (which performs auth).
+            Self::confirm_milestone(
+                env.clone(),
+                buyer.clone(),
+                shipment_id.clone(),
+                milestone_index,
+            );
+            let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+            Self::record_milestone_grade(
+                &env,
+                &mut shipment,
+                &shipment_id,
+                milestone_index,
+                &buyer,
+                (grade, grade_bps),
+                (gross, 0),
+                0,
+            );
+            return;
+        }
+
+        buyer.require_auth();
+
+        let mut milestone = shipment.milestones.get(milestone_index).unwrap();
+        if milestone.status != MilestoneStatus::ProofSubmitted {
+            panic!("milestone proof not yet submitted");
+        }
+        Self::assert_manual_confirmation_allowed(
+            &env,
+            &shipment,
+            &shipment_id,
+            milestone_index,
+            &milestone,
+        );
+        if Self::joint_confirmation_required(&env, &shipment) {
+            panic!("graded confirmation unavailable for joint-confirmation shipments");
+        }
+        Self::assert_no_approved_advance(&env, &shipment_id, milestone_index);
+
+        let payout = (gross * grade_bps as i128) / 10_000;
+        let refund = gross - payout;
+        let release_after = env.ledger().sequence() + Self::grade_review_window(&env, &shipment);
+
+        milestone.status = MilestoneStatus::ConfirmedHeld;
+        milestone.release_after_ledger = release_after;
+        shipment.milestones.set(milestone_index, milestone);
+
+        env.storage().persistent().set(
+            &DataKeyExt3::PendingGrade(shipment_id.clone(), milestone_index),
+            &(grade, grade_bps),
+        );
+
+        Self::record_milestone_grade(
+            &env,
+            &mut shipment,
+            &shipment_id,
+            milestone_index,
+            &buyer,
+            (grade, grade_bps),
+            (payout, refund),
+            release_after,
+        );
+    }
+
+    /// Payout basis points per grade index configured for the shipment (empty = none).
+    pub fn get_quality_grades(env: Env, shipment_id: String) -> Vec<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKeyExt3::QualityGrades(shipment_id))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Grade recorded for a milestone by `confirm_milestone_graded` (None = not graded).
+    pub fn get_milestone_grade(env: Env, shipment_id: String, milestone_index: u32) -> Option<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKeyExt3::MilestoneGrade(shipment_id, milestone_index))
+    }
+
+    // ----------------------------------------------------------
+    // #518: QUANTITY-BASED PRO-RATA MILESTONE PAYMENT
+    // ----------------------------------------------------------
+
+    /// Buyer confirms delivery of `delivered_qty` units of a quantity-based
+    /// milestone. Each call releases `gross * cumulative / expected` minus what was
+    /// already released (fees applied per release). The call that brings the
+    /// cumulative quantity to `expected_quantity` releases the remainder — including
+    /// any rounding dust — through the standard `confirm_milestone` path, which
+    /// marks the milestone Confirmed.
+    ///
+    /// Only a registered buyer may confirm quantities. Unavailable for shipments
+    /// with a holdback, joint confirmation, or an approved advance on the milestone.
+    pub fn confirm_partial_quantity(
+        env: Env,
+        buyer: Address,
+        shipment_id: String,
+        milestone_index: u32,
+        delivered_qty: u32,
+    ) {
+        env.storage()
+            .instance()
+            .extend_ttl(constants::TTL_INITIAL_LEDGERS, constants::TTL_MAX_LEDGERS);
+        Self::assert_not_paused(&env);
+
+        if delivered_qty == 0 {
+            panic!("delivered quantity must be positive");
+        }
+
+        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+        if shipment.status != ShipmentStatus::Active {
+            panic!("shipment is not active");
+        }
+        Self::assert_shipment_not_on_hold(&env, &shipment_id);
+        if !Self::is_buyer(&shipment, &buyer) {
+            panic!("unauthorized");
+        }
+        if milestone_index >= shipment.milestones.len() {
+            panic!("invalid milestone index");
+        }
+
+        let expected = Self::expected_quantity(&env, &shipment_id, milestone_index);
+        if expected == 0 {
+            panic!("milestone is not quantity-based");
+        }
+
+        let milestone = shipment.milestones.get(milestone_index).unwrap();
+        if milestone.status != MilestoneStatus::ProofSubmitted {
+            panic!("milestone proof not yet submitted");
+        }
+        if shipment.holdback_ledgers > 0 {
+            panic!("quantity confirmation unavailable with holdback");
+        }
+        if Self::joint_confirmation_required(&env, &shipment) {
+            panic!("quantity confirmation unavailable for joint-confirmation shipments");
+        }
+        Self::assert_no_approved_advance(&env, &shipment_id, milestone_index);
+        Self::assert_manual_confirmation_allowed(
+            &env,
+            &shipment,
+            &shipment_id,
+            milestone_index,
+            &milestone,
+        );
+
+        let qty_key = DataKeyExt3::DeliveredQuantity(shipment_id.clone(), milestone_index);
+        let previous: u32 = env.storage().persistent().get(&qty_key).unwrap_or(0);
+        if delivered_qty > expected - previous {
+            panic!("delivered quantity exceeds remaining quantity");
+        }
+        let cumulative = previous + delivered_qty;
+
+        let full_gross = Self::milestone_full_gross_payment(&env, &shipment, milestone_index);
+        let released_key = DataKeyExt3::PartialQtyReleased(shipment_id.clone(), milestone_index);
+        let released_before: i128 = env.storage().persistent().get(&released_key).unwrap_or(0);
+
+        env.storage().persistent().set(&qty_key, &cumulative);
+        env.storage().persistent().extend_ttl(
+            &qty_key,
+            constants::TTL_INITIAL_LEDGERS,
+            constants::TTL_MAX_LEDGERS,
+        );
+
+        if cumulative == expected {
+            // Final unit: `milestone_gross_payment` now returns exactly the unreleased
+            // remainder, so confirm_milestone pays it (with fees) and completes the milestone.
+            let release = full_gross - released_before;
+            Self::confirm_milestone(
+                env.clone(),
+                buyer.clone(),
+                shipment_id.clone(),
+                milestone_index,
+            );
+            let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+            Self::append_audit_entry(
+                &env,
+                &mut shipment,
+                buyer.clone(),
+                Symbol::new(&env, "partial_qty_confirmed"),
+                Symbol::new(&env, "confirm_partial_quantity"),
+            );
+            env.storage()
+                .persistent()
+                .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
+            Self::emit_partial_quantity_confirmed(
+                &env,
+                &shipment_id,
+                milestone_index,
+                (delivered_qty, cumulative, expected),
+                release,
+                0,
+            );
+            return;
+        }
+
+        buyer.require_auth();
+
+        let target = (full_gross * cumulative as i128) / expected as i128;
+        let release = target - released_before;
+        env.storage().persistent().set(&released_key, &target);
+        env.storage().persistent().extend_ttl(
+            &released_key,
+            constants::TTL_INITIAL_LEDGERS,
+            constants::TTL_MAX_LEDGERS,
+        );
+
+        let mut fee_amount: i128 = 0;
+        if release > 0 {
+            let primary_buyer = shipment.buyers.get(0).unwrap();
+            let (net_payment, _applied_bps) = Self::deduct_fee_for_shipment_at_completion(
+                &env,
+                release,
+                &shipment.token,
+                &shipment_id,
+                &primary_buyer,
+                false,
+                &mut fee_amount,
+            );
+            Self::check_circuit_breaker(&env, release);
+            Self::check_address_outflow(&env, &shipment.supplier, release);
+
+            let token_client = token::Client::new(&env, &shipment.token);
+            let mut actual_transfer = net_payment;
+            if shipment.logistics_fee_bps > 0 {
+                let logistics_fee = (release * shipment.logistics_fee_bps as i128) / 10_000;
+                if logistics_fee > 0 && logistics_fee <= actual_transfer {
+                    actual_transfer -= logistics_fee;
+                    token_client.transfer(
+                        &env.current_contract_address(),
+                        &shipment.logistics,
+                        &logistics_fee,
+                    );
+                }
+            }
+
+            shipment.released_amount += release;
+            Self::decrease_total_escrowed(&env, &shipment.token, release);
+            Self::pay_milestone_to_payees(
+                &env,
+                &shipment_id,
+                milestone_index,
+                actual_transfer,
+                &shipment.supplier,
+                &token_client,
+            );
+        }
+
+        Self::append_audit_entry(
+            &env,
+            &mut shipment,
+            buyer.clone(),
+            Symbol::new(&env, "partial_qty_confirmed"),
+            Symbol::new(&env, "confirm_partial_quantity"),
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
+
+        Self::emit_partial_quantity_confirmed(
+            &env,
+            &shipment_id,
+            milestone_index,
+            (delivered_qty, cumulative, expected),
+            release,
+            fee_amount,
+        );
+    }
+
+    /// Returns `(delivered, expected)` quantity for a milestone (expected 0 = not quantity-based).
+    pub fn get_delivered_quantity(env: Env, shipment_id: String, milestone_index: u32) -> (u32, u32) {
+        let delivered: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKeyExt3::DeliveredQuantity(
+                shipment_id.clone(),
+                milestone_index,
+            ))
+            .unwrap_or(0);
+        (
+            delivered,
+            Self::expected_quantity(&env, &shipment_id, milestone_index),
+        )
+    }
+
+    // ----------------------------------------------------------
+    // #520: RETAINAGE
+    // ----------------------------------------------------------
+
+    /// Retainage withheld so far and not yet released to the supplier or refunded.
+    pub fn get_retainage_balance(env: Env, shipment_id: String) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKeyExt3::RetainageBalance(shipment_id))
+            .unwrap_or(0)
+    }
+
+    // ----------------------------------------------------------
+    // #521: WARRANTY HOLDBACK
+    // ----------------------------------------------------------
+
+    /// Buyer files a warranty claim on a completed shipment while the warranty
+    /// period is open. The claim is routed to the shipment's arbiter and blocks
+    /// `release_warranty` until `resolve_warranty_claim` is called.
+    pub fn file_warranty_claim(
+        env: Env,
+        buyer: Address,
+        shipment_id: String,
+        evidence_hash: BytesN<32>,
+    ) {
+        Self::assert_not_paused(&env);
+
+        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+        Self::require_buyer_auth(&shipment, &buyer);
+
+        if shipment.status != ShipmentStatus::Completed {
+            panic!("warranty claims require a completed shipment");
+        }
+        if evidence_hash == BytesN::from_array(&env, &[0u8; 32]) {
+            panic!("invalid evidence hash");
+        }
+        if Self::warranty_balance(&env, &shipment_id) <= 0 {
+            panic!("no warranty holdback");
+        }
+        let ends_at: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKeyExt3::WarrantyEndsAt(shipment_id.clone()))
+            .unwrap_or_else(|| panic!("no warranty holdback"));
+        if env.ledger().sequence() >= ends_at {
+            panic!("warranty period has ended");
+        }
+        let claim_key = DataKeyExt3::WarrantyClaim(shipment_id.clone());
+        if env.storage().persistent().has(&claim_key) {
+            panic!("warranty claim already open");
+        }
+
+        env.storage().persistent().set(
+            &claim_key,
+            &WarrantyClaim {
+                buyer: buyer.clone(),
+                evidence_hash: evidence_hash.clone(),
+                filed_ledger: env.ledger().sequence(),
+            },
+        );
+        env.storage().persistent().extend_ttl(
+            &claim_key,
+            constants::TTL_INITIAL_LEDGERS,
+            constants::TTL_MAX_LEDGERS,
+        );
+
+        Self::append_audit_entry(
+            &env,
+            &mut shipment,
+            buyer.clone(),
+            Symbol::new(&env, "warranty_claim_filed"),
+            Symbol::new(&env, "file_warranty_claim"),
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
+
+        env.events().publish(
+            (Symbol::new(&env, "warranty_claim_filed"), shipment_id),
+            (buyer, shipment.arbiter.clone(), evidence_hash),
+        );
+    }
+
+    /// Arbiter resolves an open warranty claim. `refund_buyer = true` refunds the
+    /// whole warranty holdback to the buyer; `false` dismisses the claim, leaving the
+    /// holdback to be released to the supplier by `release_warranty` once the
+    /// warranty period ends.
+    pub fn resolve_warranty_claim(
+        env: Env,
+        arbiter: Address,
+        shipment_id: String,
+        refund_buyer: bool,
+    ) {
+        Self::assert_not_paused(&env);
+
+        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+        Self::require_arbiter_auth(&shipment, &arbiter);
+
+        let claim_key = DataKeyExt3::WarrantyClaim(shipment_id.clone());
+        let claim: WarrantyClaim = env
+            .storage()
+            .persistent()
+            .get(&claim_key)
+            .unwrap_or_else(|| panic!("no open warranty claim"));
+        env.storage().persistent().remove(&claim_key);
+
+        let mut refunded: i128 = 0;
+        if refund_buyer {
+            refunded = Self::warranty_balance(&env, &shipment_id);
+            if refunded > 0 {
+                let token_client = token::Client::new(&env, &shipment.token);
+                token_client.transfer(&env.current_contract_address(), &claim.buyer, &refunded);
+                env.storage()
+                    .persistent()
+                    .remove(&DataKeyExt3::WarrantyBalance(shipment_id.clone()));
+                Self::decrease_total_escrowed(&env, &shipment.token, refunded);
+            }
+        }
+
+        Self::append_audit_entry(
+            &env,
+            &mut shipment,
+            arbiter.clone(),
+            Symbol::new(&env, "warranty_claim_resolved"),
+            if refund_buyer {
+                Symbol::new(&env, "buyer")
+            } else {
+                Symbol::new(&env, "supplier")
+            },
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
+
+        env.events().publish(
+            (Symbol::new(&env, "warranty_claim_resolved"), shipment_id),
+            (arbiter, refund_buyer, refunded),
+        );
+    }
+
+    /// Permissionless: once the warranty period has ended with no open claim, pays
+    /// the remaining warranty holdback to the supplier.
+    pub fn release_warranty(env: Env, shipment_id: String) {
+        Self::assert_not_paused(&env);
+
+        let mut shipment = Self::get_shipment_internal(&env, &shipment_id);
+        if shipment.status != ShipmentStatus::Completed {
+            panic!("shipment is not completed");
+        }
+        let amount = Self::warranty_balance(&env, &shipment_id);
+        if amount <= 0 {
+            panic!("no warranty holdback");
+        }
+        let ends_at: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKeyExt3::WarrantyEndsAt(shipment_id.clone()))
+            .unwrap_or_else(|| panic!("no warranty holdback"));
+        if env.ledger().sequence() < ends_at {
+            panic!("warranty period not yet ended");
+        }
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKeyExt3::WarrantyClaim(shipment_id.clone()))
+        {
+            panic!("warranty claim pending");
+        }
+
+        let token_client = token::Client::new(&env, &shipment.token);
+        token_client.transfer(&env.current_contract_address(), &shipment.supplier, &amount);
+        env.storage()
+            .persistent()
+            .remove(&DataKeyExt3::WarrantyBalance(shipment_id.clone()));
+        Self::decrease_total_escrowed(&env, &shipment.token, amount);
+
+        Self::append_audit_entry(
+            &env,
+            &mut shipment,
+            env.current_contract_address(),
+            Symbol::new(&env, "warranty_released"),
+            Symbol::new(&env, "release_warranty"),
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shipment(shipment_id.clone()), &shipment);
+
+        env.events().publish(
+            (Symbol::new(&env, "warranty_released"), shipment_id),
+            (shipment.supplier.clone(), amount),
+        );
+    }
+
+    /// Warranty holdback currently in escrow for a shipment.
+    pub fn get_warranty_balance(env: Env, shipment_id: String) -> i128 {
+        Self::warranty_balance(&env, &shipment_id)
+    }
+
+    /// Ledger at which the warranty period ends (0 = warranty period not started).
+    pub fn get_warranty_end_ledger(env: Env, shipment_id: String) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKeyExt3::WarrantyEndsAt(shipment_id))
+            .unwrap_or(0)
+    }
+
+    /// Open warranty claim for a shipment, if any.
+    pub fn get_warranty_claim(env: Env, shipment_id: String) -> Option<WarrantyClaim> {
+        env.storage()
+            .persistent()
+            .get(&DataKeyExt3::WarrantyClaim(shipment_id))
+    }
+}
+
+impl ChainSettleContract {
+    /// #518–#521: Validates the grading, quantity, retainage and warranty options.
+    fn validate_settlement_options(
+        quality_grades: &Vec<u32>,
+        milestone_quantities: &Vec<u32>,
+        retainage_bps: u32,
+        warranty_bps: u32,
+        warranty_ledgers: u32,
+        milestone_count: u32,
+    ) {
+        if !quality_grades.is_empty() {
+            if quality_grades.len() > constants::MAX_QUALITY_GRADES {
+                panic!("too many quality grades");
+            }
+            if quality_grades.get(0).unwrap() != 10_000 {
+                panic!("grade 0 must be 10000 bps");
+            }
+            let mut previous: u32 = 10_000;
+            for i in 0..quality_grades.len() {
+                let bps = quality_grades.get(i).unwrap();
+                if bps > previous {
+                    panic!("quality grades must be non-increasing");
+                }
+                previous = bps;
+            }
+        }
+        if !milestone_quantities.is_empty() && milestone_quantities.len() != milestone_count {
+            panic!("milestone quantity count must match milestone count");
+        }
+        if retainage_bps > constants::MAX_RETAINAGE_BPS {
+            panic!("retainage_bps exceeds maximum");
+        }
+        if warranty_bps > constants::MAX_WARRANTY_BPS {
+            panic!("warranty_bps exceeds maximum");
+        }
+        if (warranty_bps > 0) != (warranty_ledgers > 0) {
+            panic!("warranty_bps and warranty_ledgers must both be set");
+        }
+    }
+
+    /// #518–#521: Persists the settlement options under their own storage keys.
+    fn store_settlement_options(
+        env: &Env,
+        shipment_id: &String,
+        quality_grades: &Vec<u32>,
+        milestone_quantities: &Vec<u32>,
+        retainage_bps: u32,
+        warranty_bps: u32,
+        warranty_ledgers: u32,
+    ) {
+        if !quality_grades.is_empty() {
+            Self::set_persistent(
+                env,
+                &DataKeyExt3::QualityGrades(shipment_id.clone()),
+                quality_grades,
+            );
+        }
+        if !milestone_quantities.is_empty() {
+            Self::set_persistent(
+                env,
+                &DataKeyExt3::MilestoneQuantities(shipment_id.clone()),
+                milestone_quantities,
+            );
+        }
+        if retainage_bps > 0 {
+            Self::set_persistent(
+                env,
+                &DataKeyExt3::RetainageBps(shipment_id.clone()),
+                &retainage_bps,
+            );
+        }
+        if warranty_bps > 0 {
+            Self::set_persistent(
+                env,
+                &DataKeyExt3::WarrantyConfig(shipment_id.clone()),
+                &(warranty_bps, warranty_ledgers),
+            );
+        }
+    }
+
+    fn set_persistent<V: IntoVal<Env, Val>>(env: &Env, key: &DataKeyExt3, value: &V) {
+        env.storage().persistent().set(key, value);
+        env.storage().persistent().extend_ttl(
+            key,
+            constants::TTL_INITIAL_LEDGERS,
+            constants::TTL_MAX_LEDGERS,
+        );
+    }
+
+    fn decrease_total_escrowed(env: &Env, token: &Address, amount: i128) {
+        let key = DataKey::TotalEscrowed(token.clone());
+        let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&key, &(current - amount).max(0));
+    }
+
+    fn increase_total_escrowed(env: &Env, token: &Address, amount: i128) {
+        let key = DataKey::TotalEscrowed(token.clone());
+        let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        env.storage().persistent().set(&key, &(current + amount));
+    }
+
+    /// Checks shared by the manual confirmation paths (`confirm_milestone_graded`,
+    /// `confirm_partial_quantity`): oracle attestations, per-shipment pause,
+    /// confirmation cooldown and the auto-confirmation window.
+    fn assert_manual_confirmation_allowed(
+        env: &Env,
+        shipment: &Shipment,
+        shipment_id: &String,
+        milestone_index: u32,
+        milestone: &Milestone,
+    ) {
+        Self::assert_oracle_attestation_met(env, shipment_id, milestone_index);
+        Self::assert_shipment_not_paused(env, shipment_id);
+
+        let cooldown = Self::get_confirmation_cooldown_internal(env, shipment_id);
+        let fast_track = Self::is_fast_track_eligible_internal(env, &shipment.supplier);
+        if cooldown > 0 && !fast_track {
+            let proof_ledger = milestone.proof_submitted_ledger.unwrap_or(0);
+            if env.ledger().sequence() < proof_ledger + cooldown {
+                panic!("confirmation cooldown not elapsed");
+            }
+        }
+
+        let effective_window = Self::get_effective_auto_confirm_window(env, shipment);
+        if effective_window > 0 {
+            if let Some(proof_ledger) = milestone.proof_submitted_ledger {
+                if env.ledger().sequence() >= proof_ledger + effective_window {
+                    panic!("milestone has auto-confirmed; use claim_auto_confirmation");
+                }
+            }
+        }
+    }
+
+    fn assert_no_approved_advance(env: &Env, shipment_id: &String, milestone_index: u32) {
+        if let Some(req) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, AdvanceRequest>(&DataKey::AdvanceRequest(
+                shipment_id.clone(),
+                milestone_index,
+            ))
+        {
+            if req.approved {
+                panic!("not allowed when an approved advance exists for this milestone");
+            }
+        }
+    }
+
+    /// #519: Window during which the supplier may contest a grade: the longer of the
+    /// shipment's holdback and review windows, or a default when neither is set.
+    fn grade_review_window(env: &Env, shipment: &Shipment) -> u32 {
+        let review = Self::get_effective_auto_confirm_window(env, shipment);
+        let window = shipment.holdback_ledgers.max(review);
+        if window == 0 {
+            constants::DEFAULT_GRADE_REVIEW_WINDOW_LEDGERS
+        } else {
+            window
+        }
+    }
+
+    /// #519: Records the grade, appends it to the audit log, persists the shipment
+    /// and emits `milestone_graded`.
+    #[allow(clippy::too_many_arguments)]
+    fn record_milestone_grade(
+        env: &Env,
+        shipment: &mut Shipment,
+        shipment_id: &String,
+        milestone_index: u32,
+        buyer: &Address,
+        grade: (u32, u32),
+        amounts: (i128, i128),
+        release_after_ledger: u32,
+    ) {
+        let (grade_index, grade_bps) = grade;
+        let (payout, refund) = amounts;
+        Self::set_persistent(
+            env,
+            &DataKeyExt3::MilestoneGrade(shipment_id.clone(), milestone_index),
+            &grade_index,
+        );
+        Self::append_audit_entry(
+            env,
+            shipment,
+            buyer.clone(),
+            Symbol::new(env, "milestone_graded"),
+            Symbol::new(env, "confirm_milestone_graded"),
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::Shipment(shipment_id.clone()), shipment);
+        env.events().publish(
+            (Symbol::new(env, "milestone_graded"), shipment_id.clone()),
+            (
+                milestone_index,
+                grade_index,
+                grade_bps,
+                payout,
+                refund,
+                release_after_ledger,
+            ),
+        );
+    }
+
+    /// #519: Pays a graded milestone: `payout` (the graded share of `gross`) to the
+    /// supplier after platform fees, and `gross - payout` back to the primary buyer
+    /// (less `refund_fee`, e.g. an arbiter fee already paid out of it).
+    /// Returns (supplier net transfer, buyer refund, platform fee).
+    fn pay_graded_split(
+        env: &Env,
+        shipment: &Shipment,
+        shipment_id: &String,
+        milestone_index: u32,
+        gross: i128,
+        grade_bps: u32,
+        refund_fee: i128,
+    ) -> (i128, i128, i128) {
+        let payout = (gross * grade_bps as i128) / 10_000;
+        let refund = (gross - payout - refund_fee).max(0);
+        let token_client = token::Client::new(env, &shipment.token);
+
+        let mut fee_amount: i128 = 0;
+        let mut net = 0;
+        if payout > 0 {
+            net = Self::deduct_fee(env, payout, &shipment.token, &mut fee_amount);
+            Self::check_circuit_breaker(env, payout);
+            Self::check_address_outflow(env, &shipment.supplier, payout);
+            Self::pay_milestone_to_payees(
+                env,
+                shipment_id,
+                milestone_index,
+                net,
+                &shipment.supplier,
+                &token_client,
+            );
+        }
+        if refund > 0 {
+            let primary_buyer = shipment.buyers.get(0).unwrap();
+            token_client.transfer(&env.current_contract_address(), &primary_buyer, &refund);
+        }
+        (net, refund, fee_amount)
+    }
+
+    /// #518: Expected quantity for a milestone (0 = not quantity-based).
+    fn expected_quantity(env: &Env, shipment_id: &String, milestone_index: u32) -> u32 {
+        env.storage()
+            .persistent()
+            .get::<DataKeyExt3, Vec<u32>>(&DataKeyExt3::MilestoneQuantities(shipment_id.clone()))
+            .and_then(|q| q.get(milestone_index))
+            .unwrap_or(0)
+    }
+
+    fn emit_partial_quantity_confirmed(
+        env: &Env,
+        shipment_id: &String,
+        milestone_index: u32,
+        quantities: (u32, u32, u32),
+        released: i128,
+        fee_amount: i128,
+    ) {
+        let (delivered, cumulative, expected) = quantities;
+        env.events().publish(
+            (
+                Symbol::new(env, "partial_quantity_confirmed"),
+                shipment_id.clone(),
+            ),
+            (
+                milestone_index,
+                delivered,
+                cumulative,
+                expected,
+                released,
+                fee_amount,
+            ),
+        );
+    }
+
+    fn warranty_balance(env: &Env, shipment_id: &String) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKeyExt3::WarrantyBalance(shipment_id.clone()))
+            .unwrap_or(0)
+    }
+
+    /// #520/#521: Withholds retainage and warranty holdback from a net milestone
+    /// payment. The withheld amounts stay in escrow (and in `TotalEscrowed`).
+    /// Returns the amount left to pay out now.
+    fn withhold_settlement_holdbacks(
+        env: &Env,
+        shipment_id: &String,
+        milestone_index: u32,
+        net_amount: i128,
+        token_client: &token::Client,
+    ) -> i128 {
+        let retainage_bps: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKeyExt3::RetainageBps(shipment_id.clone()))
+            .unwrap_or(0);
+        let warranty_bps: u32 = env
+            .storage()
+            .persistent()
+            .get::<DataKeyExt3, (u32, u32)>(&DataKeyExt3::WarrantyConfig(shipment_id.clone()))
+            .map(|(bps, _)| bps)
+            .unwrap_or(0);
+        if retainage_bps == 0 && warranty_bps == 0 {
+            return net_amount;
+        }
+
+        let retained = (net_amount * retainage_bps as i128) / 10_000;
+        let warranty = (net_amount * warranty_bps as i128) / 10_000;
+
+        if retained > 0 {
+            let key = DataKeyExt3::RetainageBalance(shipment_id.clone());
+            let balance: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+            Self::set_persistent(env, &key, &(balance + retained));
+        }
+        if warranty > 0 {
+            let key = DataKeyExt3::WarrantyBalance(shipment_id.clone());
+            let balance: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+            Self::set_persistent(env, &key, &(balance + warranty));
+        }
+        if retained + warranty > 0 {
+            Self::increase_total_escrowed(env, &token_client.address, retained + warranty);
+            env.events().publish(
+                (Symbol::new(env, "holdback_withheld"), shipment_id.clone()),
+                (milestone_index, retained, warranty),
+            );
+        }
+        net_amount - retained - warranty
+    }
+
+    /// #520/#521: Called whenever a shipment transitions to Completed. Releases the
+    /// full retainage balance to the supplier, starts the warranty period for any
+    /// warranty holdback, then emits `shipment_completed`.
+    fn settle_on_completion(env: &Env, shipment_id: &String, shipment: &mut Shipment) {
+        let retainage_key = DataKeyExt3::RetainageBalance(shipment_id.clone());
+        let retainage: i128 = env.storage().persistent().get(&retainage_key).unwrap_or(0);
+        if retainage > 0 {
+            let token_client = token::Client::new(env, &shipment.token);
+            token_client.transfer(
+                &env.current_contract_address(),
+                &shipment.supplier,
+                &retainage,
+            );
+            env.storage().persistent().remove(&retainage_key);
+            Self::decrease_total_escrowed(env, &shipment.token, retainage);
+            Self::append_audit_entry(
+                env,
+                shipment,
+                env.current_contract_address(),
+                Symbol::new(env, "retainage_released"),
+                Symbol::new(env, "shipment_completed"),
+            );
+            env.events().publish(
+                (Symbol::new(env, "retainage_released"), shipment_id.clone()),
+                (shipment.supplier.clone(), retainage),
+            );
+        }
+
+        let warranty = Self::warranty_balance(env, shipment_id);
+        if warranty > 0 {
+            let ledgers = env
+                .storage()
+                .persistent()
+                .get::<DataKeyExt3, (u32, u32)>(&DataKeyExt3::WarrantyConfig(shipment_id.clone()))
+                .map(|(_, ledgers)| ledgers)
+                .unwrap_or(0);
+            let ends_at = env.ledger().sequence() + ledgers;
+            Self::set_persistent(env, &DataKeyExt3::WarrantyEndsAt(shipment_id.clone()), &ends_at);
+            Self::append_audit_entry(
+                env,
+                shipment,
+                env.current_contract_address(),
+                Symbol::new(env, "warranty_started"),
+                Symbol::new(env, "shipment_completed"),
+            );
+            env.events().publish(
+                (Symbol::new(env, "warranty_started"), shipment_id.clone()),
+                (warranty, ends_at),
+            );
+        }
+
+        Self::emit_shipment_completed(env, shipment_id, shipment.released_amount);
+    }
+
+    /// #520/#521: Called whenever a shipment is cancelled or expires. Refunds any
+    /// withheld retainage and warranty holdback to the primary buyer.
+    fn refund_holdbacks_on_cancel(
+        env: &Env,
+        shipment_id: &String,
+        shipment: &mut Shipment,
+        caller: Address,
+    ) {
+        let retainage_key = DataKeyExt3::RetainageBalance(shipment_id.clone());
+        let warranty_key = DataKeyExt3::WarrantyBalance(shipment_id.clone());
+        let retainage: i128 = env.storage().persistent().get(&retainage_key).unwrap_or(0);
+        let warranty: i128 = env.storage().persistent().get(&warranty_key).unwrap_or(0);
+        let total = retainage + warranty;
+        if total <= 0 {
+            return;
+        }
+        let primary_buyer = shipment.buyers.get(0).unwrap();
+        let token_client = token::Client::new(env, &shipment.token);
+        token_client.transfer(&env.current_contract_address(), &primary_buyer, &total);
+        env.storage().persistent().remove(&retainage_key);
+        env.storage().persistent().remove(&warranty_key);
+        Self::decrease_total_escrowed(env, &shipment.token, total);
+        Self::append_audit_entry(
+            env,
+            shipment,
+            caller,
+            Symbol::new(env, "holdback_refunded"),
+            Symbol::new(env, "shipment_cancelled"),
+        );
+        env.events().publish(
+            (Symbol::new(env, "holdback_refunded"), shipment_id.clone()),
+            (primary_buyer, retainage, warranty),
+        );
+    }
+}
+
 pub mod constants;
 mod storage;
 mod test_arbiter_pool;
@@ -13844,6 +15086,10 @@ mod test_jurisdiction_tag;
 mod test_max_allowed_tokens;
 mod test_fee_waiver;
 mod test_payout_preview;
+mod test_quality_grades;
+mod test_partial_quantity;
+mod test_retainage;
+mod test_warranty;
 // Disabled: exercises milestone insurance holdback / oracle price-condition
 // APIs (see NEW_MILESTONE_FEATURES.md) that have not been implemented yet.
 // mod test_milestone_insurance_and_oracle;
